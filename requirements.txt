@@ -1,0 +1,9 @@
+moviepy>=1.0.3
+opencv-python>=4.5.1.78
+librosa>=0.8.0
+pydub>=0.25.1
+numpy>=1.19.0
+pillow>=8.0.0
+scikit-image>=0.18.0
+pyscenetect>=0.6.0
+gradio>=3.0.0
