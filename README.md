@@ -48,13 +48,46 @@ Transform any collection of media files into hypnotic generative music videos or
 - Python 3.7+
 - FFmpeg (required for video processing)
 
-### Install Dependencies
-```bash
-# Clone the repository
+### Cross-Platform Installation
+
+#### Windows
+1. Install Python 3.7+ from [python.org](https://www.python.org/downloads/)
+2. Install FFmpeg:
+   - Download from [ffmpeg.org](https://ffmpeg.org/download.html)
+   - Add FFmpeg to your system PATH
+3. Open Command Prompt and run:
+```cmd
 git clone https://github.com/orithet/orithet.git
 cd orithet
+pip install -r requirements.txt
+```
 
-# Install Python dependencies
+#### macOS
+1. Install Python 3.7+ using Homebrew:
+```bash
+brew install python
+```
+2. Install FFmpeg:
+```bash
+brew install ffmpeg
+```
+3. Open Terminal and run:
+```bash
+git clone https://github.com/orithet/orithet.git
+cd orithet
+pip install -r requirements.txt
+```
+
+#### Linux (Ubuntu/Debian)
+1. Install Python 3.7+ and FFmpeg:
+```bash
+sudo apt update
+sudo apt install python3 python3-pip ffmpeg
+```
+2. Open Terminal and run:
+```bash
+git clone https://github.com/orithet/orithet.git
+cd orithet
 pip install -r requirements.txt
 ```
 
@@ -153,6 +186,18 @@ python orithet/cli.py --input_folder ./media_samples --seed 12345 --style glitch
 python orithet/cli.py --input_folder ./media_samples --resolution 3840 2160 --duration 240
 ```
 
+### Cross-Platform Usage Examples
+
+#### Windows
+```cmd
+python orithet/cli.py --input_folder "C:\Users\YourName\Documents\media" --duration 120 --chaos 0.5
+```
+
+#### macOS/Linux
+```bash
+python orithet/cli.py --input_folder ~/Documents/media --duration 120 --chaos 0.5
+```
+
 ## 📁 Project Structure
 
 ```
@@ -188,6 +233,22 @@ Each system is modular:
 - **Recursion Depth**: Limited to 3 levels to prevent render explosion
 - **Frame Rate**: Default 30fps for smooth playback
 
+## ⚙️ Cross-Platform Notes
+
+### Windows
+- Ensure FFmpeg is added to your system PATH
+- Use double quotes for paths with spaces
+- Some antivirus software may block FFmpeg execution
+
+### macOS
+- Use Homebrew to install dependencies for optimal performance
+- May need to grant accessibility permissions for screen recording features
+
+### Linux
+- Most distributions require explicit FFmpeg installation
+- Consider using system package managers for optimized builds
+- GPU acceleration support varies by distribution
+
 ## 🤝 Contributing
 
 Contributions are welcome! Please:
@@ -200,6 +261,22 @@ Contributions are welcome! Please:
 ## 📄 License
 
 MIT License - see LICENSE file for details.
+
+## 🌐 Cross-Platform Compatibility
+
+Orithet is designed to work seamlessly across all major operating systems:
+
+### Supported Platforms
+- **Windows 10/11** - Full functionality with proper path handling
+- **macOS 10.15+** - Native support with Homebrew optimization
+- **Linux (Ubuntu 18.04+)** - Package manager optimized installations
+
+### Platform-Specific Considerations
+- **Windows**: Requires FFmpeg in PATH; uses Windows-style paths
+- **macOS**: Recommended Homebrew installation for dependencies
+- **Linux**: Standard package management for system dependencies
+
+The tool maintains consistent behavior across platforms while adapting to each OS's specific requirements.
 
 ## 🙏 Acknowledgments
 

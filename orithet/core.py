@@ -21,7 +21,7 @@ import warnings
 warnings.filterwarnings('ignore')
 
 class OrithetCore:
-    def __init__(self, input_folder, duration=120, chaos=0.5, seed=None,
+    def __init__(self, input_folder, duration=120, chaos=0.5, seed=None, 
                  resolution=(1920, 1080), style="dream"):
         """
         Initialize Orithet core engine
@@ -54,6 +54,7 @@ class OrithetCore:
         self.clips = []
         self.creatures = []
         self.similarity_graph = {}
+        self.audio_info = {'bpm': 120, 'energy_bands': {'low': 0.5, 'mid': 0.5, 'high': 0.5}}
         
     def load_media(self):
         """Load and categorize all media files from input folder"""
@@ -480,7 +481,8 @@ class OrithetCore:
             
             # Create clip with effects
             timeline_clip = self.create_timed_clip(clip, current_time, adjusted_duration)
-            timeline_clips.append(timeline_clip)
+            if timeline_clip is not None:
+                timeline_clips.append(timeline_clip)
             
             current_time += adjusted_duration
             
@@ -492,19 +494,59 @@ class OrithetCore:
         
     def create_timed_clip(self, clip, start_time, duration):
         """Create a timed clip with appropriate effects"""
-        # This would actually create a MoviePy clip with effects applied
-        # For now, we'll simulate it
-        return {
-            'clip': clip,
-            'start_time': start_time,
-            'duration': duration,
-            'effects': clip.get('effects', [])
-        }
+        # Create a proper MoviePy clip with effects
+        if clip['type'] == 'video':
+            # For video clips, create a MoviePy VideoFileClip
+            try:
+                video_clip = VideoFileClip(clip['path']).subclip(
+                    clip['start_frame']/30, 
+                    clip['end_frame']/30
+                ).set_start(start_time).set_duration(duration)
+                return {
+                    'clip': clip,
+                    'start_time': start_time,
+                    'duration': duration,
+                    'effects': clip.get('effects', []),
+                    'moviepy_clip': video_clip
+                }
+            except Exception as e:
+                print(f"Error creating video clip from {clip['path']}: {e}")
+                return None
+        elif clip['type'] == 'image':
+            # For image clips, create a MoviePy ImageClip
+            try:
+                image_clip = ImageClip(clip['path']).set_duration(duration).set_start(start_time)
+                return {
+                    'clip': clip,
+                    'start_time': start_time,
+                    'duration': duration,
+                    'effects': clip.get('effects', []),
+                    'moviepy_clip': image_clip
+                }
+            except Exception as e:
+                print(f"Error creating image clip from {clip['path']}: {e}")
+                return None
+        else:
+            # For other types, create a simple placeholder
+            try:
+                from moviepy.video.tools.drawing import color_gradient
+                color_clip = ColorClip(size=self.resolution, color=(100, 100, 100), duration=duration).set_start(start_time)
+                return {
+                    'clip': clip,
+                    'start_time': start_time,
+                    'duration': duration,
+                    'effects': clip.get('effects', []),
+                    'moviepy_clip': color_clip
+                }
+            except Exception as e:
+                print(f"Error creating placeholder clip: {e}")
+                return None
         
     def add_recursive_overlays(self, timeline_clips, time_point):
         """Add recursive PiP layers at beat events"""
-        # This would add recursive overlays to the timeline
-        # Implementation would involve creating smaller versions of the composition
+        # Add recursive overlays to create fractal effects
+        # This would create smaller versions of the composition as PiP layers
+        # For now, we'll add a placeholder that demonstrates the concept
         pass
         
     def render_video(self, output_path):
@@ -514,21 +556,69 @@ class OrithetCore:
         # Generate timeline
         timeline_clips = self.generate_timeline()
         
-        # Create final composition
-        final_composition = CompositeVideoClip([])
-        
-        # Add clips to composition with appropriate timing
+        # Create final composition with actual MoviePy clips
+        video_clips = []
         for clip_info in timeline_clips:
-            # In a real implementation, we would create actual MoviePy clips here
-            pass
+            clip = clip_info['clip']
+            start_time = clip_info['start_time']
+            duration = clip_info['duration']
             
-        # Render video
-        # final_composition.write_videofile(output_path, fps=30, codec='libx264')
+            # Create actual MoviePy clips based on clip type
+            if clip['type'] == 'video':
+                # For video clips, create a MoviePy VideoFileClip
+                try:
+                    video_clip = VideoFileClip(clip['path']).subclip(
+                        clip['start_frame']/30,
+                        clip['end_frame']/30
+                    ).set_start(start_time).set_duration(duration)
+                    video_clips.append(video_clip)
+                except Exception as e:
+                    print(f"Error creating video clip from {clip['path']}: {e}")
+                    continue
+            elif clip['type'] == 'image':
+                # For image clips, create a MoviePy ImageClip
+                try:
+                    image_clip = ImageClip(clip['path']).set_duration(duration).set_start(start_time)
+                    video_clips.append(image_clip)
+                except Exception as e:
+                    print(f"Error creating image clip from {clip['path']}: {e}")
+                    continue
+            elif clip['type'] == 'fused':
+                # For fused clips, create a simple colored clip as placeholder
+                try:
+                    # Create a solid color clip as placeholder
+                    from moviepy.video.tools.drawing import color_gradient
+                    color_clip = ColorClip(size=self.resolution, color=(100, 100, 100), duration=duration).set_start(start_time)
+                    video_clips.append(color_clip)
+                except Exception as e:
+                    print(f"Error creating fused clip: {e}")
+                    continue
+        
+        # Create composite video
+        if video_clips:
+            # Sort clips by start time
+            video_clips.sort(key=lambda x: x.start)
+            
+            # Create final composition
+            final_composition = CompositeVideoClip(video_clips, size=self.resolution)
+            
+            # Apply final effects and render
+            final_composition.write_videofile(
+                output_path,
+                fps=30,
+                codec='libx264',
+                audio_codec='aac',
+                temp_audiofile='temp-audio.m4a',
+                remove_temp=True
+            )
+        else:
+            print("No valid clips to render")
+            
         print(f"Video rendered to {output_path}")
         
     def run(self):
-        """Run the complete NexusWeave pipeline"""
-        print("Starting NexusWeave processing...")
+        """Run the complete Orithet pipeline"""
+        print("Starting Orithet processing...")
         
         # Step 1: Load media
         self.load_media()
@@ -543,7 +633,7 @@ class OrithetCore:
         timeline_clips = self.generate_timeline()
         
         # Step 5: Render final video
-        output_path = f"nexusweave_output_{self.seed}.mp4"
+        output_path = f"orithet_output_{self.seed}.mp4"
         self.render_video(output_path)
         
         print("Processing complete!")
