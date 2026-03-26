@@ -27,7 +27,7 @@ setup(
         "numpy>=1.19.0",
         "pillow>=8.0.0",
         "scikit-image>=0.18.0",
-        "pyscenetect>=0.6.0",
+        "scenedetect>=0.6.0",
         "gradio>=3.0.0",
     ],
     entry_points={

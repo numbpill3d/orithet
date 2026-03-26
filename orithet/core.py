@@ -9,632 +9,590 @@ This file contains the main processing logic that blends all four systems:
 
 import os
 import random
+import tempfile
 import numpy as np
 import cv2
 from PIL import Image
 import librosa
 import pydub
-from moviepy.editor import *
-from pyscenetect import SceneDetector
-from skimage.metrics import structural_similarity as ssim
+from moviepy.editor import (
+    VideoFileClip, ImageClip, ColorClip, CompositeVideoClip
+)
 import warnings
 warnings.filterwarnings('ignore')
 
+try:
+    from scenedetect import detect, ContentDetector
+    SCENEDETECT_AVAILABLE = True
+except ImportError:
+    SCENEDETECT_AVAILABLE = False
+
+
 class OrithetCore:
-    def __init__(self, input_folder, duration=120, chaos=0.5, seed=None, 
+    def __init__(self, input_folder, duration=120, chaos=0.5, seed=None,
                  resolution=(1920, 1080), style="dream"):
-        """
-        Initialize Orithet core engine
-        
-        Args:
-            input_folder (str): Path to folder containing media files
-            duration (int): Target video duration in seconds
-            chaos (float): Randomness factor (0.0-1.0)
-            seed (int): Random seed for reproducibility
-            resolution (tuple): Output resolution (width, height)
-            style (str): Preset style ("dream", "glitch", "psychedelic", "ambient")
-        """
         self.input_folder = input_folder
         self.duration = duration
         self.chaos = chaos
         self.seed = seed or random.randint(1, 1000000)
         random.seed(self.seed)
         np.random.seed(self.seed)
-        
-        # Style presets
+
         self.styles = {
-            "dream": {"glitch_prob": 0.1, "recursion_depth": 2, "motion_factor": 0.3},
-            "glitch": {"glitch_prob": 0.8, "recursion_depth": 3, "motion_factor": 0.7},
+            "dream":       {"glitch_prob": 0.1, "recursion_depth": 2, "motion_factor": 0.3},
+            "glitch":      {"glitch_prob": 0.8, "recursion_depth": 3, "motion_factor": 0.7},
             "psychedelic": {"glitch_prob": 0.5, "recursion_depth": 3, "motion_factor": 0.8},
-            "ambient": {"glitch_prob": 0.05, "recursion_depth": 1, "motion_factor": 0.1}
+            "ambient":     {"glitch_prob": 0.05, "recursion_depth": 1, "motion_factor": 0.1},
         }
         self.style_params = self.styles.get(style, self.styles["dream"])
-        
+
         self.resolution = resolution
         self.clips = []
         self.creatures = []
         self.similarity_graph = {}
-        self.audio_info = {'bpm': 120, 'energy_bands': {'low': 0.5, 'mid': 0.5, 'high': 0.5}}
-        
+        self.audio_info = {
+            'bpm': 120,
+            'energy_bands': {'low': 0.5, 'mid': 0.5, 'high': 0.5}
+        }
+
+    # -------------------------------------------------------------------------
+    # Media loading
+    # -------------------------------------------------------------------------
+
     def load_media(self):
-        """Load and categorize all media files from input folder"""
-        print("Loading media from:", self.input_folder)
-        
-        supported_extensions = {
+        print("loading media from:", self.input_folder)
+
+        supported = {
             'video': ['.mp4', '.mov', '.avi', '.mkv'],
             'audio': ['.mp3', '.wav', '.flac'],
-            'image': ['.jpg', '.jpeg', '.png', '.gif']
+            'image': ['.jpg', '.jpeg', '.png', '.gif'],
         }
-        
-        # Categorize files
-        files_by_type = {'video': [], 'audio': [], 'image': []}
-        
+        files = {'video': [], 'audio': [], 'image': []}
+
         for filename in os.listdir(self.input_folder):
             filepath = os.path.join(self.input_folder, filename)
             if not os.path.isfile(filepath):
                 continue
-                
             _, ext = os.path.splitext(filename.lower())
-            
-            for category, extensions in supported_extensions.items():
-                if ext in extensions:
-                    files_by_type[category].append(filepath)
+            for category, exts in supported.items():
+                if ext in exts:
+                    files[category].append(filepath)
                     break
-        
-        # Process each type of media
-        self.process_videos(files_by_type['video'])
-        self.process_audio(files_by_type['audio'])
-        self.process_images(files_by_type['image'])
-        
-        print(f"Loaded {len(self.clips)} clips from {self.input_folder}")
-        
+
+        self.process_videos(files['video'])
+        self.process_audio(files['audio'])
+        self.process_images(files['image'])
+
+        print(f"loaded {len(self.clips)} clips")
+
     def process_videos(self, video_paths):
-        """Process video files with scene detection"""
         for video_path in video_paths:
             try:
-                # Get video properties
                 cap = cv2.VideoCapture(video_path)
                 fps = cap.get(cv2.CAP_PROP_FPS)
                 frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-                duration = frame_count / fps if fps > 0 else 0
-                
-                # Detect scenes
+                cap.release()
+
                 scenes = self.detect_scenes(video_path)
-                
-                # Create clips from scenes
-                for i, (start_frame, end_frame) in enumerate(scenes):
-                    clip_duration = (end_frame - start_frame) / fps
-                    
-                    # Only include clips that are reasonable length
+
+                for start_frame, end_frame in scenes:
+                    clip_duration = (end_frame - start_frame) / fps if fps > 0 else 0
                     if 1 <= clip_duration <= 15:
-                        clip = {
+                        self.clips.append({
                             'path': video_path,
                             'type': 'video',
                             'start_frame': start_frame,
                             'end_frame': end_frame,
                             'duration': clip_duration,
-                            'metadata': self.extract_clip_metadata(video_path, start_frame, end_frame)
-                        }
-                        self.clips.append(clip)
-                        
-                cap.release()
-                
+                            'fps': fps,
+                            'metadata': self.extract_clip_metadata(video_path, start_frame, end_frame),
+                        })
             except Exception as e:
-                print(f"Error processing video {video_path}: {e}")
-                
+                print(f"error processing video {video_path}: {e}")
+
     def detect_scenes(self, video_path):
-        """Detect scenes in video using PySceneDetect"""
-        try:
-            detector = SceneDetector()
-            scenes = detector.detect_scenes(video_path)
-            return scenes
-        except:
-            # Fallback: split video into fixed intervals
-            cap = cv2.VideoCapture(video_path)
-            fps = cap.get(cv2.CAP_PROP_FPS)
-            frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-            cap.release()
-            
-            if fps == 0:
-                return [(0, frame_count)]
-                
-            # Split into 5-second segments
-            segment_length = int(fps * 5)
-            scenes = []
-            for i in range(0, frame_count, segment_length):
-                scenes.append((i, min(i + segment_length, frame_count)))
-            return scenes
-            
+        if SCENEDETECT_AVAILABLE:
+            try:
+                scene_list = detect(video_path, ContentDetector())
+                if scene_list:
+                    return [(s.get_frames(), e.get_frames()) for s, e in scene_list]
+            except Exception:
+                pass
+
+        # fallback: fixed 5-second segments
+        cap = cv2.VideoCapture(video_path)
+        fps = cap.get(cv2.CAP_PROP_FPS)
+        frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        cap.release()
+
+        if fps == 0:
+            return [(0, frame_count)]
+
+        segment_length = int(fps * 5)
+        return [(i, min(i + segment_length, frame_count))
+                for i in range(0, frame_count, segment_length)]
+
     def process_audio(self, audio_paths):
-        """Process audio files to extract BPM and energy info"""
         if not audio_paths:
             return
-            
-        # Combine all audio files for analysis
+
         combined_audio = None
         for audio_path in audio_paths:
             try:
                 audio = pydub.AudioSegment.from_file(audio_path)
-                if combined_audio is None:
-                    combined_audio = audio
-                else:
-                    combined_audio += audio
+                combined_audio = audio if combined_audio is None else combined_audio + audio
             except Exception as e:
-                print(f"Error processing audio {audio_path}: {e}")
-                
-        if combined_audio:
-            # Extract BPM using librosa
-            y, sr = librosa.load(combined_audio.export(format="wav").name)
+                print(f"error processing audio {audio_path}: {e}")
+
+        if combined_audio is None:
+            return
+
+        try:
+            with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as tmp:
+                tmp_path = tmp.name
+            combined_audio.export(tmp_path, format="wav")
+
+            y, sr = librosa.load(tmp_path)
+            os.unlink(tmp_path)
+
             tempo, _ = librosa.beat.beat_track(y=y, sr=sr)
-            
-            # Extract energy bands
-            hop_length = 512
-            stft = librosa.stft(y, hop_length=hop_length)
+
+            stft = librosa.stft(y)
             magnitude = np.abs(stft)
-            
-            # Split into low, mid, high frequency bands
-            low_freq = librosa.feature.mfcc(S=magnitude, sr=sr, n_mels=128, fmax=500)
-            mid_freq = librosa.feature.mfcc(S=magnitude, sr=sr, n_mels=128, fmin=500, fmax=3000)
-            high_freq = librosa.feature.mfcc(S=magnitude, sr=sr, n_mels=128, fmin=3000)
-            
+            freqs = librosa.fft_frequencies(sr=sr)
+
+            low_mask  = freqs < 500
+            mid_mask  = (freqs >= 500) & (freqs < 3000)
+            high_mask = freqs >= 3000
+
             self.audio_info = {
-                'bpm': tempo,
+                'bpm': float(tempo),
                 'energy_bands': {
-                    'low': np.mean(low_freq),
-                    'mid': np.mean(mid_freq),
-                    'high': np.mean(high_freq)
+                    'low':  float(np.mean(magnitude[low_mask]))  if low_mask.any()  else 0.5,
+                    'mid':  float(np.mean(magnitude[mid_mask]))  if mid_mask.any()  else 0.5,
+                    'high': float(np.mean(magnitude[high_mask])) if high_mask.any() else 0.5,
                 }
             }
-        else:
-            self.audio_info = {'bpm': 120, 'energy_bands': {'low': 0.5, 'mid': 0.5, 'high': 0.5}}
-            
+            print(f"audio: {self.audio_info['bpm']:.1f} bpm")
+        except Exception as e:
+            print(f"audio analysis failed: {e}")
+
     def process_images(self, image_paths):
-        """Process image files into variable-length clips"""
         for image_path in image_paths:
             try:
-                # Load image and get dimensions
                 img = Image.open(image_path)
-                width, height = img.size
-                
-                # Estimate duration based on visual complexity
-                # Simple heuristic: larger images get longer durations
-                duration = max(2, min(15, width * height // 100000))
-                
-                clip = {
+                w, h = img.size
+                duration = max(2, min(15, w * h // 100000))
+                self.clips.append({
                     'path': image_path,
                     'type': 'image',
                     'duration': duration,
-                    'metadata': self.extract_clip_metadata(image_path)
-                }
-                self.clips.append(clip)
-                
+                    'metadata': self.extract_clip_metadata(image_path),
+                })
             except Exception as e:
-                print(f"Error processing image {image_path}: {e}")
-                
+                print(f"error processing image {image_path}: {e}")
+
+    # -------------------------------------------------------------------------
+    # Metadata
+    # -------------------------------------------------------------------------
+
     def extract_clip_metadata(self, path, start_frame=None, end_frame=None):
-        """Extract metadata from clips for similarity analysis"""
-        metadata = {}
-        
-        if path.endswith(('.mp4', '.mov', '.avi')):
-            # For video files, analyze motion and color
-            cap = cv2.VideoCapture(path)
-            if start_frame is not None:
-                cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
-                
-            # Sample frames for analysis
-            frame_count = 0
-            color_sum = np.zeros(3)
-            motion_sum = 0
-            prev_frame = None
-            
-            while frame_count < 10:  # Sample 10 frames
-                ret, frame = cap.read()
-                if not ret:
-                    break
-                    
-                # Convert to grayscale for motion detection
-                gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-                
-                if prev_frame is not None:
-                    # Calculate optical flow for motion
-                    flow = cv2.calcOpticalFlowFarneback(prev_frame, gray, None, 0.5, 3, 15, 3, 5, 1.2, 0)
-                    motion = np.mean(np.abs(flow))
-                    motion_sum += motion
-                    
-                # Calculate average color
-                avg_color = np.mean(frame, axis=(0, 1))
-                color_sum += avg_color
-                
-                prev_frame = gray
-                frame_count += 1
-                
-            cap.release()
-            
-            metadata.update({
-                'avg_color': color_sum / frame_count if frame_count > 0 else [0, 0, 0],
-                'motion_energy': motion_sum / frame_count if frame_count > 0 else 0,
-                'dominant_hue': self.get_dominant_hue(frame) if frame is not None else 0
-            })
-            
-        elif path.endswith(('.jpg', '.jpeg', '.png', '.gif')):
-            # For images, analyze color palette
-            img = Image.open(path)
-            img_array = np.array(img)
-            
-            # Get dominant colors
-            if len(img_array.shape) == 3:
-                # Convert to RGB if needed
-                if img_array.shape[2] == 4:
-                    img_array = img_array[:, :, :3]
-                    
-                # Flatten and get unique colors
-                flat_colors = img_array.reshape(-1, 3)
-                unique_colors = np.unique(flat_colors, axis=0)
-                avg_color = np.mean(unique_colors, axis=0)
-            else:
-                avg_color = [np.mean(img_array)]
-                
-            metadata.update({
-                'avg_color': avg_color,
-                'motion_energy': 0,  # Images have no motion
-                'dominant_hue': self.get_dominant_hue(img_array) if len(img_array.shape) == 3 else 0
-            })
-            
+        metadata = {'avg_color': [128, 128, 128], 'motion_energy': 0, 'dominant_hue': 0}
+        _, ext = os.path.splitext(path.lower())
+
+        if ext in ('.mp4', '.mov', '.avi', '.mkv'):
+            try:
+                cap = cv2.VideoCapture(path)
+                if start_frame is not None:
+                    cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
+
+                frame_count = 0
+                color_sum = np.zeros(3)
+                motion_sum = 0.0
+                prev_gray = None
+                last_frame = None
+
+                while frame_count < 10:
+                    ret, frame = cap.read()
+                    if not ret:
+                        break
+                    last_frame = frame
+                    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+                    if prev_gray is not None:
+                        flow = cv2.calcOpticalFlowFarneback(
+                            prev_gray, gray, None, 0.5, 3, 15, 3, 5, 1.2, 0
+                        )
+                        motion_sum += float(np.mean(np.abs(flow)))
+                    color_sum += np.mean(frame, axis=(0, 1))
+                    prev_gray = gray
+                    frame_count += 1
+
+                cap.release()
+
+                if frame_count > 0:
+                    metadata['avg_color'] = (color_sum / frame_count).tolist()
+                    metadata['motion_energy'] = motion_sum / frame_count
+                if last_frame is not None:
+                    metadata['dominant_hue'] = self.get_dominant_hue(last_frame)
+            except Exception:
+                pass
+
+        elif ext in ('.jpg', '.jpeg', '.png', '.gif'):
+            try:
+                img = Image.open(path).convert('RGB')
+                arr = np.array(img)
+                metadata['avg_color'] = np.mean(arr, axis=(0, 1)).tolist()
+                metadata['dominant_hue'] = self.get_dominant_hue(arr)
+            except Exception:
+                pass
+
         return metadata
-        
+
     def get_dominant_hue(self, img_array):
-        """Calculate dominant hue from image"""
-        if len(img_array.shape) == 3:
-            hsv = cv2.cvtColor(img_array, cv2.COLOR_RGB2HSV)
-            hue_hist = cv2.calcHist([hsv], [0], None, [180], [0, 180])
-            return np.argmax(hue_hist)
+        try:
+            if img_array.shape[2] == 3:
+                hsv = cv2.cvtColor(img_array.astype(np.uint8), cv2.COLOR_RGB2HSV)
+                hue_hist = cv2.calcHist([hsv], [0], None, [180], [0, 180])
+                return int(np.argmax(hue_hist))
+        except Exception:
+            pass
         return 0
-        
+
+    # -------------------------------------------------------------------------
+    # EchoMosaic: similarity graph
+    # -------------------------------------------------------------------------
+
     def build_similarity_graph(self):
-        """Build a similarity graph based on color, motion, and audio mood"""
-        print("Building similarity graph...")
-        
-        # Create adjacency matrix based on clip similarities
-        n_clips = len(self.clips)
+        print("building similarity graph...")
+        n = len(self.clips)
         self.similarity_graph = {}
-        
-        for i in range(n_clips):
+        for i in range(n):
             self.similarity_graph[i] = []
-            for j in range(n_clips):
+            for j in range(n):
                 if i != j:
-                    similarity = self.calculate_similarity(self.clips[i], self.clips[j])
-                    if similarity > 0.3:  # Threshold for similarity
-                        self.similarity_graph[i].append((j, similarity))
-                        
+                    sim = self.calculate_similarity(self.clips[i], self.clips[j])
+                    if sim > 0.3:
+                        self.similarity_graph[i].append((j, sim))
+
     def calculate_similarity(self, clip1, clip2):
-        """Calculate similarity between two clips based on metadata"""
-        meta1 = clip1['metadata']
-        meta2 = clip2['metadata']
-        
-        # Color similarity (Euclidean distance in RGB space)
-        color_sim = 1 / (1 + np.linalg.norm(np.array(meta1['avg_color']) - np.array(meta2['avg_color'])))
-        
-        # Motion similarity (difference in motion energy)
-        motion_diff = abs(meta1['motion_energy'] - meta2['motion_energy'])
-        motion_sim = 1 / (1 + motion_diff)
-        
-        # Weighted average of similarities
-        similarity = (0.6 * color_sim) + (0.4 * motion_sim)
-        return similarity
-        
+        m1, m2 = clip1['metadata'], clip2['metadata']
+        color_sim = 1.0 / (1.0 + np.linalg.norm(
+            np.array(m1['avg_color']) - np.array(m2['avg_color'])
+        ))
+        motion_sim = 1.0 / (1.0 + abs(m1['motion_energy'] - m2['motion_energy']))
+        return 0.6 * color_sim + 0.4 * motion_sim
+
+    # -------------------------------------------------------------------------
+    # GlitchGarden: ecosystem simulation
+    # -------------------------------------------------------------------------
+
     def create_ecosystem_simulation(self):
-        """Create a 2D ecosystem simulation where creatures interact"""
-        print("Creating ecosystem simulation...")
-        
-        # Initialize creatures (each clip becomes a creature)
+        print("creating ecosystem simulation...")
         self.creatures = []
         for i, clip in enumerate(self.clips):
-            creature = {
+            self.creatures.append({
                 'id': i,
                 'clip': clip,
-                'position': [random.uniform(0, 30), random.uniform(0, 30)],  # 30x30 grid
+                'position': [random.uniform(0, 30), random.uniform(0, 30)],
                 'velocity': [random.uniform(-0.5, 0.5), random.uniform(-0.5, 0.5)],
                 'age': 0,
                 'effects': [],
-                'mutation_rate': self.chaos * 0.1
-            }
-            self.creatures.append(creature)
-            
-        # Run simulation for a number of steps
-        steps = 100
-        for step in range(steps):
+                'mutation_rate': self.chaos * 0.1,
+            })
+
+        for step in range(100):
             self.update_creatures(step)
-            
+
     def update_creatures(self, step):
-        """Update creature positions and interactions"""
-        # Move creatures
-        for creature in self.creatures:
-            # Apply velocity with some randomness
-            creature['position'][0] += creature['velocity'][0] + random.uniform(-0.1, 0.1)
-            creature['position'][1] += creature['velocity'][1] + random.uniform(-0.1, 0.1)
-            
-            # Boundary conditions
-            creature['position'][0] = max(0, min(30, creature['position'][0]))
-            creature['position'][1] = max(0, min(30, creature['position'][1]))
-            
-            # Age creature
-            creature['age'] += 1
-            
-        # Check for collisions and interactions
+        for c in self.creatures:
+            c['position'][0] = max(0, min(30, c['position'][0] + c['velocity'][0] + random.uniform(-0.1, 0.1)))
+            c['position'][1] = max(0, min(30, c['position'][1] + c['velocity'][1] + random.uniform(-0.1, 0.1)))
+            c['age'] += 1
+
         for i in range(len(self.creatures)):
-            for j in range(i+1, len(self.creatures)):
-                creature1 = self.creatures[i]
-                creature2 = self.creatures[j]
-                
-                # Calculate distance between creatures
-                dx = creature1['position'][0] - creature2['position'][0]
-                dy = creature1['position'][1] - creature2['position'][1]
-                distance = np.sqrt(dx*dx + dy*dy)
-                
-                # If close enough, interact
-                if distance < 2.0:
-                    self.handle_creature_interaction(creature1, creature2, step)
-                    
-    def handle_creature_interaction(self, creature1, creature2, step):
-        """Handle interaction between two creatures"""
-        # Determine interaction type based on similarity and position
+            for j in range(i + 1, len(self.creatures)):
+                c1, c2 = self.creatures[i], self.creatures[j]
+                dx = c1['position'][0] - c2['position'][0]
+                dy = c1['position'][1] - c2['position'][1]
+                if (dx * dx + dy * dy) < 4.0:
+                    self.handle_creature_interaction(c1, c2, step)
+
+    def handle_creature_interaction(self, c1, c2, step):
         color_sim = self.color_similarity(
-            creature1['clip']['metadata']['avg_color'],
-            creature2['clip']['metadata']['avg_color']
+            c1['clip']['metadata']['avg_color'],
+            c2['clip']['metadata']['avg_color']
         )
-        
-        motion_sim = abs(creature1['clip']['metadata']['motion_energy'] - 
-                         creature2['clip']['metadata']['motion_energy'])
-        
-        # Fuse similar creatures
+
         if color_sim > 0.7 and random.random() < 0.3:
-            self.fuse_creatures(creature1, creature2)
-            
-        # Apply glitch effect to high-motion creatures
-        if (creature1['clip']['metadata']['motion_energy'] > 0.5 or 
-            creature2['clip']['metadata']['motion_energy'] > 0.5):
+            self.fuse_creatures(c1, c2)
+
+        if (c1['clip']['metadata']['motion_energy'] > 0.5 or
+                c2['clip']['metadata']['motion_energy'] > 0.5):
             if random.random() < self.style_params['glitch_prob']:
-                self.apply_glitch_effect(creature1)
-                self.apply_glitch_effect(creature2)
-                
-        # Random mutations
-        if random.random() < creature1['mutation_rate']:
-            self.mutate_creature(creature1)
-        if random.random() < creature2['mutation_rate']:
-            self.mutate_creature(creature2)
-            
-    def color_similarity(self, color1, color2):
-        """Calculate color similarity between two RGB colors"""
-        return 1 / (1 + np.linalg.norm(np.array(color1) - np.array(color2)) / 255)
-        
-    def fuse_creatures(self, creature1, creature2):
-        """Fuse two similar creatures together"""
-        # Average their metadata
-        avg_color = [(c1 + c2) / 2 for c1, c2 in zip(creature1['clip']['metadata']['avg_color'], 
-                                                    creature2['clip']['metadata']['avg_color'])]
-        
-        # Create fused clip metadata
-        fused_metadata = {
+                self.apply_glitch_effect(c1)
+                self.apply_glitch_effect(c2)
+
+        if random.random() < c1['mutation_rate']:
+            self.mutate_creature(c1)
+        if random.random() < c2['mutation_rate']:
+            self.mutate_creature(c2)
+
+    def color_similarity(self, c1, c2):
+        return 1.0 / (1.0 + np.linalg.norm(np.array(c1) - np.array(c2)) / 255.0)
+
+    def fuse_creatures(self, c1, c2):
+        avg_color = [(a + b) / 2 for a, b in zip(
+            c1['clip']['metadata']['avg_color'],
+            c2['clip']['metadata']['avg_color']
+        )]
+        fused_meta = {
             'avg_color': avg_color,
-            'motion_energy': (creature1['clip']['metadata']['motion_energy'] + 
-                             creature2['clip']['metadata']['motion_energy']) / 2,
-            'dominant_hue': (creature1['clip']['metadata']['dominant_hue'] + 
-                            creature2['clip']['metadata']['dominant_hue']) / 2
+            'motion_energy': (c1['clip']['metadata']['motion_energy'] +
+                              c2['clip']['metadata']['motion_energy']) / 2,
+            'dominant_hue': (c1['clip']['metadata']['dominant_hue'] +
+                             c2['clip']['metadata']['dominant_hue']) / 2,
         }
-        
-        # Create new fused creature
-        fused_creature = {
-            'id': f"{creature1['id']}-{creature2['id']}",
+        fused = {
+            'id': f"{c1['id']}-{c2['id']}",
             'clip': {
-                'path': 'fused',
-                'type': 'fused',
-                'duration': (creature1['clip']['duration'] + creature2['clip']['duration']) / 2,
-                'metadata': fused_metadata
+                'path': c1['clip']['path'],
+                'type': c1['clip']['type'],
+                'start_frame': c1['clip'].get('start_frame'),
+                'end_frame': c1['clip'].get('end_frame'),
+                'fps': c1['clip'].get('fps', 30),
+                'duration': (c1['clip']['duration'] + c2['clip']['duration']) / 2,
+                'metadata': fused_meta,
             },
-            'position': [(creature1['position'][0] + creature2['position'][0]) / 2,
-                        (creature1['position'][1] + creature2['position'][1]) / 2],
-            'velocity': [(creature1['velocity'][0] + creature2['velocity'][0]) / 2,
-                        (creature1['velocity'][1] + creature2['velocity'][1]) / 2],
-            'age': max(creature1['age'], creature2['age']),
-            'effects': creature1['effects'] + creature2['effects']
+            'position': [
+                (c1['position'][0] + c2['position'][0]) / 2,
+                (c1['position'][1] + c2['position'][1]) / 2,
+            ],
+            'velocity': [
+                (c1['velocity'][0] + c2['velocity'][0]) / 2,
+                (c1['velocity'][1] + c2['velocity'][1]) / 2,
+            ],
+            'age': max(c1['age'], c2['age']),
+            'effects': list(set(c1['effects'] + c2['effects'])),
+            'mutation_rate': (c1['mutation_rate'] + c2['mutation_rate']) / 2,
         }
-        
-        # Replace one of the creatures with the fused one
-        # (In a real implementation, we'd remove both and add the fused one)
-        
+        # replace c1 with fused, mark c2 for removal
+        idx1 = self.creatures.index(c1)
+        self.creatures[idx1] = fused
+        if c2 in self.creatures:
+            self.creatures.remove(c2)
+
     def apply_glitch_effect(self, creature):
-        """Apply a glitch effect to a creature"""
-        effects = ['pixel_sort', 'datamosh', 'rgb_shift', 'mirror']
-        effect = random.choice(effects)
-        creature['effects'].append(effect)
-        
+        effect = random.choice(['pixel_sort', 'datamosh', 'rgb_shift', 'mirror'])
+        if effect not in creature['effects']:
+            creature['effects'].append(effect)
+
     def mutate_creature(self, creature):
-        """Apply random mutations to a creature"""
         if random.random() < 0.5:
-            # Change color slightly
             color = creature['clip']['metadata']['avg_color']
-            mutated_color = [max(0, min(255, c + random.randint(-20, 20))) for c in color]
-            creature['clip']['metadata']['avg_color'] = mutated_color
-            
+            creature['clip']['metadata']['avg_color'] = [
+                max(0, min(255, c + random.randint(-20, 20))) for c in color
+            ]
         if random.random() < 0.3:
-            # Change motion energy
-            creature['clip']['metadata']['motion_energy'] = max(0, min(1, 
-                creature['clip']['metadata']['motion_energy'] + random.uniform(-0.1, 0.1)))
-                
+            me = creature['clip']['metadata']['motion_energy']
+            creature['clip']['metadata']['motion_energy'] = max(0, min(1, me + random.uniform(-0.1, 0.1)))
+
+    # -------------------------------------------------------------------------
+    # GlitchGarden: frame-level effects
+    # -------------------------------------------------------------------------
+
+    def _rgb_shift(self, frame):
+        shift = max(2, int(self.chaos * 12))
+        result = frame.copy()
+        result[:, shift:, 0] = frame[:, :-shift, 0]
+        result[:, :-shift, 2] = frame[:, shift:, 2]
+        return result
+
+    def _mirror(self, frame):
+        result = frame.copy()
+        half = frame.shape[1] // 2
+        result[:, half:] = frame[:, :half][:, ::-1]
+        return result
+
+    def _pixel_sort(self, frame):
+        result = frame.copy()
+        gray = cv2.cvtColor(frame, cv2.COLOR_RGB2GRAY)
+        for i in range(0, frame.shape[0], 3):
+            idx = np.argsort(gray[i])
+            result[i] = frame[i][idx]
+        return result
+
+    def _datamosh(self, frame):
+        shift = max(8, int(self.chaos * 20))
+        shifted = np.roll(frame, shift, axis=0)
+        return cv2.addWeighted(frame, 0.75, shifted.astype(np.uint8), 0.25, 0)
+
+    def apply_effects_to_clip(self, clip, effects):
+        effect_fns = {
+            'rgb_shift':  self._rgb_shift,
+            'mirror':     self._mirror,
+            'pixel_sort': self._pixel_sort,
+            'datamosh':   self._datamosh,
+        }
+        for effect in effects:
+            fn = effect_fns.get(effect)
+            if fn:
+                clip = clip.fl_image(fn)
+        return clip
+
+    # -------------------------------------------------------------------------
+    # PulseForge: beat-snapped timeline
+    # -------------------------------------------------------------------------
+
     def generate_timeline(self):
-        """Generate final timeline based on ecosystem simulation"""
-        print("Generating timeline...")
-        
-        # Sort creatures by age and position to create a logical flow
+        print("generating timeline...")
+        bpm = self.audio_info.get('bpm', 120)
+        beat_interval = 60.0 / max(bpm, 1)
+
         sorted_creatures = sorted(self.creatures, key=lambda c: (c['age'], c['position'][0]))
-        
-        # Create timeline clips
+
         timeline_clips = []
-        current_time = 0
-        
+        current_time = 0.0
+
         for creature in sorted_creatures:
+            if current_time >= self.duration:
+                break
+
             clip = creature['clip']
-            duration = clip['duration']
-            
-            # Adjust duration based on motion energy and chaos
-            adjusted_duration = duration * (0.8 + self.chaos * 0.4)
-            
-            # Create clip with effects
-            timeline_clip = self.create_timed_clip(clip, current_time, adjusted_duration)
-            if timeline_clip is not None:
-                timeline_clips.append(timeline_clip)
-            
-            current_time += adjusted_duration
-            
-            # Occasionally add recursive overlays at beat events
-            if random.random() < 0.1 and self.audio_info:
+            raw_duration = clip['duration'] * (0.8 + self.chaos * 0.4)
+
+            # snap to beat grid
+            beats = max(1, round(raw_duration / beat_interval))
+            snapped_duration = beats * beat_interval
+
+            clip['effects'] = creature.get('effects', [])
+            timed = self.create_timed_clip(clip, current_time, snapped_duration)
+            if timed is not None:
+                timeline_clips.append(timed)
+
+            current_time += snapped_duration
+
+            # FractalFusion: spawn recursive overlays ~10% of the time at beat boundaries
+            if random.random() < 0.1:
                 self.add_recursive_overlays(timeline_clips, current_time)
-                
+
         return timeline_clips
-        
+
     def create_timed_clip(self, clip, start_time, duration):
-        """Create a timed clip with appropriate effects"""
-        # Create a proper MoviePy clip with effects
-        if clip['type'] == 'video':
-            # For video clips, create a MoviePy VideoFileClip
-            try:
-                video_clip = VideoFileClip(clip['path']).subclip(
-                    clip['start_frame']/30, 
-                    clip['end_frame']/30
-                ).set_start(start_time).set_duration(duration)
-                return {
-                    'clip': clip,
-                    'start_time': start_time,
-                    'duration': duration,
-                    'effects': clip.get('effects', []),
-                    'moviepy_clip': video_clip
-                }
-            except Exception as e:
-                print(f"Error creating video clip from {clip['path']}: {e}")
-                return None
-        elif clip['type'] == 'image':
-            # For image clips, create a MoviePy ImageClip
-            try:
-                image_clip = ImageClip(clip['path']).set_duration(duration).set_start(start_time)
-                return {
-                    'clip': clip,
-                    'start_time': start_time,
-                    'duration': duration,
-                    'effects': clip.get('effects', []),
-                    'moviepy_clip': image_clip
-                }
-            except Exception as e:
-                print(f"Error creating image clip from {clip['path']}: {e}")
-                return None
-        else:
-            # For other types, create a simple placeholder
-            try:
-                from moviepy.video.tools.drawing import color_gradient
-                color_clip = ColorClip(size=self.resolution, color=(100, 100, 100), duration=duration).set_start(start_time)
-                return {
-                    'clip': clip,
-                    'start_time': start_time,
-                    'duration': duration,
-                    'effects': clip.get('effects', []),
-                    'moviepy_clip': color_clip
-                }
-            except Exception as e:
-                print(f"Error creating placeholder clip: {e}")
-                return None
-        
-    def add_recursive_overlays(self, timeline_clips, time_point):
-        """Add recursive PiP layers at beat events"""
-        # Add recursive overlays to create fractal effects
-        # This would create smaller versions of the composition as PiP layers
-        # For now, we'll add a placeholder that demonstrates the concept
-        pass
-        
-    def render_video(self, output_path):
-        """Render the final video"""
-        print("Rendering final video...")
-        
-        # Generate timeline
-        timeline_clips = self.generate_timeline()
-        
-        # Create final composition with actual MoviePy clips
-        video_clips = []
-        for clip_info in timeline_clips:
-            clip = clip_info['clip']
-            start_time = clip_info['start_time']
-            duration = clip_info['duration']
-            
-            # Create actual MoviePy clips based on clip type
+        try:
             if clip['type'] == 'video':
-                # For video clips, create a MoviePy VideoFileClip
-                try:
-                    video_clip = VideoFileClip(clip['path']).subclip(
-                        clip['start_frame']/30,
-                        clip['end_frame']/30
-                    ).set_start(start_time).set_duration(duration)
-                    video_clips.append(video_clip)
-                except Exception as e:
-                    print(f"Error creating video clip from {clip['path']}: {e}")
-                    continue
+                fps = clip.get('fps', 30)
+                t_start = clip['start_frame'] / fps
+                t_end = clip['end_frame'] / fps
+                mc = (VideoFileClip(clip['path'])
+                      .subclip(t_start, t_end)
+                      .set_start(start_time)
+                      .set_duration(duration))
             elif clip['type'] == 'image':
-                # For image clips, create a MoviePy ImageClip
-                try:
-                    image_clip = ImageClip(clip['path']).set_duration(duration).set_start(start_time)
-                    video_clips.append(image_clip)
-                except Exception as e:
-                    print(f"Error creating image clip from {clip['path']}: {e}")
-                    continue
-            elif clip['type'] == 'fused':
-                # For fused clips, create a simple colored clip as placeholder
-                try:
-                    # Create a solid color clip as placeholder
-                    from moviepy.video.tools.drawing import color_gradient
-                    color_clip = ColorClip(size=self.resolution, color=(100, 100, 100), duration=duration).set_start(start_time)
-                    video_clips.append(color_clip)
-                except Exception as e:
-                    print(f"Error creating fused clip: {e}")
-                    continue
-        
-        # Create composite video
-        if video_clips:
-            # Sort clips by start time
-            video_clips.sort(key=lambda x: x.start)
-            
-            # Create final composition
-            final_composition = CompositeVideoClip(video_clips, size=self.resolution)
-            
-            # Apply final effects and render
-            final_composition.write_videofile(
-                output_path,
-                fps=30,
-                codec='libx264',
-                audio_codec='aac',
-                temp_audiofile='temp-audio.m4a',
-                remove_temp=True
-            )
-        else:
-            print("No valid clips to render")
-            
-        print(f"Video rendered to {output_path}")
-        
-    def run(self):
-        """Run the complete Orithet pipeline"""
-        print("Starting Orithet processing...")
-        
-        # Step 1: Load media
-        self.load_media()
-        
-        # Step 2: Build similarity graph
-        self.build_similarity_graph()
-        
-        # Step 3: Create ecosystem simulation
-        self.create_ecosystem_simulation()
-        
-        # Step 4: Generate timeline
+                mc = (ImageClip(clip['path'])
+                      .set_duration(duration)
+                      .set_start(start_time))
+            else:
+                color = [int(c) for c in clip['metadata'].get('avg_color', [100, 100, 100])[:3]]
+                mc = (ColorClip(size=self.resolution, color=color, duration=duration)
+                      .set_start(start_time))
+
+            effects = clip.get('effects', [])
+            if effects:
+                mc = self.apply_effects_to_clip(mc, effects)
+
+            return {
+                'clip': clip,
+                'start_time': start_time,
+                'duration': duration,
+                'moviepy_clip': mc,
+            }
+        except Exception as e:
+            print(f"error creating clip from {clip.get('path', '?')}: {e}")
+            return None
+
+    # -------------------------------------------------------------------------
+    # FractalFusion: recursive PiP overlays
+    # -------------------------------------------------------------------------
+
+    def add_recursive_overlays(self, timeline_clips, time_point):
+        depth = self.style_params['recursion_depth']
+        if not timeline_clips or depth == 0:
+            return
+
+        w, h = self.resolution
+        corners = [(0, 0), (w // 2, 0), (0, h // 2), (w // 2, h // 2)]
+
+        sources = timeline_clips[-min(depth, len(timeline_clips)):]
+
+        for d, source in enumerate(sources[:depth], 1):
+            mc = source.get('moviepy_clip')
+            if mc is None:
+                continue
+
+            scale = 0.5 ** d
+            ow = max(64, int(w * scale * 0.5))
+            oh = max(36, int(h * scale * 0.5))
+            pos = corners[d % 4]
+            overlay_dur = max(0.1, min(2.0 / d, mc.duration))
+            opacity = max(0.15, 0.6 / d)
+
+            try:
+                overlay = (mc
+                           .subclip(0, overlay_dur)
+                           .resize((ow, oh))
+                           .set_start(time_point)
+                           .set_position(pos)
+                           .set_opacity(opacity))
+                timeline_clips.append({
+                    'clip': source['clip'],
+                    'start_time': time_point,
+                    'duration': overlay_dur,
+                    'moviepy_clip': overlay,
+                })
+            except Exception as e:
+                print(f"fractalfusion overlay failed at depth {d}: {e}")
+
+    # -------------------------------------------------------------------------
+    # Render
+    # -------------------------------------------------------------------------
+
+    def render_video(self, output_path):
+        print("rendering final video...")
         timeline_clips = self.generate_timeline()
-        
-        # Step 5: Render final video
-        output_path = f"orithet_output_{self.seed}.mp4"
+
+        moviepy_clips = [tc['moviepy_clip'] for tc in timeline_clips
+                         if tc.get('moviepy_clip') is not None]
+
+        if not moviepy_clips:
+            print("no valid clips to render")
+            return
+
+        moviepy_clips.sort(key=lambda c: c.start)
+
+        final = CompositeVideoClip(moviepy_clips, size=self.resolution)
+        final.write_videofile(
+            output_path,
+            fps=30,
+            codec='libx264',
+            audio_codec='aac',
+            temp_audiofile='temp-audio.m4a',
+            remove_temp=True,
+        )
+        print(f"rendered to {output_path}")
+
+    # -------------------------------------------------------------------------
+    # Entry point
+    # -------------------------------------------------------------------------
+
+    def run(self, output_path=None):
+        print("starting orithet...")
+        if output_path is None:
+            output_path = f"orithet_output_{self.seed}.mp4"
+
+        self.load_media()
+        self.build_similarity_graph()
+        self.create_ecosystem_simulation()
         self.render_video(output_path)
-        
-        print("Processing complete!")
+
+        print("done!")
         return output_path

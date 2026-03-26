@@ -1,4 +1,4 @@
 """
-NexusWeave - Generative Video Art Tool
-Blending PulseForge, EchoMosaic, GlitchGarden, and FractalFusion concepts
+Orithet - Generative Video Art Tool
+Blending PulseForge, EchoMosaic, GlitchGarden, and FractalFusion
 """

@@ -51,12 +51,9 @@ def create_gradio_interface():
                     resolution=resolution,
                     style=style
                 )
-                
-                # Run the engine
-                engine.run()
-                
-                # For demo purposes, we'll return a placeholder
-                return output_path, "Video generated successfully!"
+
+                result_path = engine.run(output_path=output_path)
+                return result_path, "Video generated successfully!"
                 
             except Exception as e:
                 return None, f"Error: {str(e)}"
