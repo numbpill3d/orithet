@@ -1,0 +1,10 @@
+venv/
+.venv/
+__pycache__/
+*.pyc
+*.egg-info/
+.python-version
+*.ipsw*
+restore_*.log
+*.lock
+*.log
