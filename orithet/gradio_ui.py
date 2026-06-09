@@ -4,6 +4,7 @@ Gradio UI for Orithet - Generative Video Art Tool
 
 import gradio as gr
 import os
+import shutil
 import tempfile
 from .core import OrithetCore
 
@@ -53,6 +54,9 @@ def create_gradio_interface():
                 )
 
                 result_path = engine.run(output_path=output_path)
+                # Schedule temp dir cleanup — on return, register for later removal
+                import atexit
+                atexit.register(lambda: shutil.rmtree(temp_dir, ignore_errors=True))
                 return result_path, "Video generated successfully!"
                 
             except Exception as e:
