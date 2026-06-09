@@ -22,10 +22,21 @@ import warnings
 warnings.filterwarnings('ignore')
 
 try:
-    from scenedetect import detect, ContentDetector
+    import scenedetect
+    from scenedetect import ContentDetector
+    from scenedetect import open_video as sd_open_video
+    # try new v2 API
+    try:
+        from scenedetect import SceneManager
+        from scenedetect.backends import OpencvVideoStream
+        SCENEDETECT_V2 = True
+    except ImportError:
+        from scenedetect import detect as sd_detect
+        SCENEDETECT_V2 = False
     SCENEDETECT_AVAILABLE = True
 except ImportError:
     SCENEDETECT_AVAILABLE = False
+    SCENEDETECT_V2 = False
 
 
 class OrithetCore:
@@ -113,14 +124,23 @@ class OrithetCore:
     def detect_scenes(self, video_path):
         if SCENEDETECT_AVAILABLE:
             try:
-                scene_list = detect(video_path, ContentDetector())
+                if SCENEDETECT_V2:
+                    from scenedetect import SceneManager
+                    video_manager = sd_open_video(str(video_path))
+                    sm = SceneManager()
+                    sm.add_detector(ContentDetector())
+                    sm.detect_scenes(video_manager)
+                    scene_list = sm.get_scene_list()
+                else:
+                    from scenedetect import detect as sd_detect
+                    scene_list = sd_detect(str(video_path), ContentDetector())
                 if scene_list:
                     return [(s.get_frames(), e.get_frames()) for s, e in scene_list]
             except Exception:
                 pass
 
         # fallback: fixed 5-second segments
-        cap = cv2.VideoCapture(video_path)
+        cap = cv2.VideoCapture(str(video_path))
         fps = cap.get(cv2.CAP_PROP_FPS)
         frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
         cap.release()
@@ -304,6 +324,7 @@ class OrithetCore:
             self.update_creatures(step)
 
     def update_creatures(self, step):
+        kill_ids = set()
         for c in self.creatures:
             c['position'][0] = max(0, min(30, c['position'][0] + c['velocity'][0] + random.uniform(-0.1, 0.1)))
             c['position'][1] = max(0, min(30, c['position'][1] + c['velocity'][1] + random.uniform(-0.1, 0.1)))
@@ -312,10 +333,15 @@ class OrithetCore:
         for i in range(len(self.creatures)):
             for j in range(i + 1, len(self.creatures)):
                 c1, c2 = self.creatures[i], self.creatures[j]
+                if c1.get('_dead') or c2.get('_dead'):
+                    continue
                 dx = c1['position'][0] - c2['position'][0]
                 dy = c1['position'][1] - c2['position'][1]
                 if (dx * dx + dy * dy) < 4.0:
                     self.handle_creature_interaction(c1, c2, step)
+
+        # apply deferred removals
+        self.creatures = [c for c in self.creatures if not c.get('_dead')]
 
     def handle_creature_interaction(self, c1, c2, step):
         color_sim = self.color_similarity(
@@ -375,11 +401,10 @@ class OrithetCore:
             'effects': list(set(c1['effects'] + c2['effects'])),
             'mutation_rate': (c1['mutation_rate'] + c2['mutation_rate']) / 2,
         }
-        # replace c1 with fused, mark c2 for removal
+        # replace c1 with fused, mark c2 as dead (deferred removal)
         idx1 = self.creatures.index(c1)
         self.creatures[idx1] = fused
-        if c2 in self.creatures:
-            self.creatures.remove(c2)
+        c2['_dead'] = True
 
     def apply_glitch_effect(self, creature):
         effect = random.choice(['pixel_sort', 'datamosh', 'rgb_shift', 'mirror'])
@@ -402,10 +427,10 @@ class OrithetCore:
 
     def _rgb_shift(self, frame):
         shift = max(2, int(self.chaos * 12))
-        result = frame.copy()
+        result = frame.copy().astype(np.int16)
         result[:, shift:, 0] = frame[:, :-shift, 0]
         result[:, :-shift, 2] = frame[:, shift:, 2]
-        return result
+        return np.clip(result, 0, 255).astype(np.uint8)
 
     def _mirror(self, frame):
         result = frame.copy()
@@ -424,7 +449,8 @@ class OrithetCore:
     def _datamosh(self, frame):
         shift = max(8, int(self.chaos * 20))
         shifted = np.roll(frame, shift, axis=0)
-        return cv2.addWeighted(frame, 0.75, shifted.astype(np.uint8), 0.25, 0)
+        blended = cv2.addWeighted(frame, 0.75, shifted.astype(np.uint8), 0.25, 0)
+        return np.clip(blended, 0, 255).astype(np.uint8)
 
     def apply_effects_to_clip(self, clip, effects):
         effect_fns = {
