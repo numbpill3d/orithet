@@ -1,7 +1,7 @@
 # Orithet - Generative Video Art Tool
 
 [![GitHub](https://img.shields.io/github/license/orithet/orithet)](LICENSE)
-[![Python](https://img.shields.io/badge/python-3.7%2B-blue)](https://www.python.org/)
+[![Python](https://img.shields.io/badge/python-3.9%2B-blue)](https://www.python.org/)
 [![FFmpeg](https://img.shields.io/badge/ffmpeg-required-orange)](https://ffmpeg.org/)
 
 Orithet is a cutting-edge generative video art tool that seamlessly blends four conceptual systems to create mesmerizing, algorithmic visual experiences:
@@ -45,7 +45,7 @@ Transform any collection of media files into hypnotic generative music videos or
 ## 📦 Installation
 
 ### Prerequisites
-- Python 3.7+
+- Python 3.9+
 - FFmpeg (required for video processing)
 
 ### Cross-Platform Installation
@@ -93,25 +93,27 @@ pip install -r requirements.txt
 
 ### Optional: Install Gradio for Web Interface
 ```bash
-pip install gradio
+pip install "orithet[ui]"
 ```
 
 ## 🚀 Quick Start
 
 ### Command Line Usage
 ```bash
-python orithet/cli.py --input_folder /path/to/media/folder --duration 120 --chaos 0.5 --seed 42 --resolution 1920 1080 --style dream
+python -m orithet.cli --input_folder /path/to/media/folder --duration 120 --chaos 0.5 --seed 42 --resolution 1920 1080 --style dream
 ```
+
+The direct script form (`python orithet/cli.py ...`) is also supported.
 
 ### Web Interface (Gradio)
 ```bash
-python orithet/gradio_ui.py
+python -m orithet.gradio_ui
 ```
 Then visit `http://localhost:7860` in your browser.
 
 ## 📁 Input Media Support
 
-NexusWeave accepts a diverse mix of media files:
+Orithet accepts a diverse mix of media files:
 - **Videos**: .mp4, .mov, .avi, .mkv
 - **Images**: .jpg, .jpeg, .png, .gif
 - **Audio**: .mp3, .wav, .flac
@@ -212,6 +214,14 @@ orithet/
 ```
 
 ## 🛠️ Development
+
+Run the dependency-light regression suite with:
+
+```bash
+python -m unittest discover -s tests -v
+```
+
+The engine validates its input folder, duration, chaos, style, and resolution before processing. Media discovery is recursive and deterministic, and a supplied seed—including `0`—produces an isolated reproducible simulation without changing the host application's global random state. Audio files are analyzed when `pydub` and `librosa` are available and the first usable soundtrack is attached to the rendered video.
 
 ### Adding New Effects
 To add new visual effects, modify the effects pipeline in `core.py`:

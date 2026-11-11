@@ -7,19 +7,40 @@ This file contains the main processing logic that blends all four systems:
 - FractalFusion (recursive overlays)
 """
 
+import logging
 import os
 import random
 import tempfile
+from pathlib import Path
+
 import numpy as np
-import cv2
-from PIL import Image
-import librosa
-import pydub
-from moviepy.editor import (
-    VideoFileClip, ImageClip, ColorClip, CompositeVideoClip
-)
-import warnings
-warnings.filterwarnings('ignore')
+
+try:
+    import cv2
+except ImportError:  # Rendering and image analysis report a useful error later.
+    cv2 = None
+
+try:
+    from PIL import Image
+except ImportError:
+    Image = None
+
+try:
+    import librosa
+except ImportError:
+    librosa = None
+
+try:
+    import pydub
+except ImportError:
+    pydub = None
+
+try:
+    from moviepy.editor import (
+        VideoFileClip, ImageClip, ColorClip, CompositeVideoClip, AudioFileClip
+    )
+except ImportError:
+    VideoFileClip = ImageClip = ColorClip = CompositeVideoClip = AudioFileClip = None
 
 try:
     from scenedetect import detect, ContentDetector
@@ -28,15 +49,29 @@ except ImportError:
     SCENEDETECT_AVAILABLE = False
 
 
+logger = logging.getLogger(__name__)
+
+
 class OrithetCore:
     def __init__(self, input_folder, duration=120, chaos=0.5, seed=None,
                  resolution=(1920, 1080), style="dream"):
-        self.input_folder = input_folder
-        self.duration = duration
+        self.input_folder = Path(input_folder).expanduser().resolve()
+        if not self.input_folder.is_dir():
+            raise ValueError(f"Input folder does not exist or is not a directory: {input_folder}")
+        if duration <= 0:
+            raise ValueError("duration must be greater than zero")
+        if not 0.0 <= chaos <= 1.0:
+            raise ValueError("chaos must be between 0.0 and 1.0")
+        if len(resolution) != 2 or any(int(value) <= 0 for value in resolution):
+            raise ValueError("resolution must contain two positive integers")
+        if style not in {"dream", "glitch", "psychedelic", "ambient"}:
+            raise ValueError(f"unknown style: {style}")
+
+        self.duration = float(duration)
         self.chaos = chaos
-        self.seed = seed or random.randint(1, 1000000)
-        random.seed(self.seed)
-        np.random.seed(self.seed)
+        self.seed = random.randint(1, 1000000) if seed is None else int(seed)
+        self.rng = random.Random(self.seed)
+        self.np_rng = np.random.default_rng(self.seed)
 
         self.styles = {
             "dream":       {"glitch_prob": 0.1, "recursion_depth": 2, "motion_factor": 0.3},
@@ -46,9 +81,11 @@ class OrithetCore:
         }
         self.style_params = self.styles.get(style, self.styles["dream"])
 
-        self.resolution = resolution
+        self.resolution = tuple(int(value) for value in resolution)
+        self.style = style
         self.clips = []
         self.creatures = []
+        self.audio_paths = []
         self.similarity_graph = {}
         self.audio_info = {
             'bpm': 120,
@@ -60,7 +97,10 @@ class OrithetCore:
     # -------------------------------------------------------------------------
 
     def load_media(self):
-        print("loading media from:", self.input_folder)
+        logger.info("loading media from %s", self.input_folder)
+        # Make repeated calls safe for UI previews and notebook workflows.
+        self.clips = []
+        self.audio_paths = []
 
         supported = {
             'video': ['.mp4', '.mov', '.avi', '.mkv'],
@@ -69,23 +109,31 @@ class OrithetCore:
         }
         files = {'video': [], 'audio': [], 'image': []}
 
-        for filename in os.listdir(self.input_folder):
-            filepath = os.path.join(self.input_folder, filename)
-            if not os.path.isfile(filepath):
+        for filepath in sorted(self.input_folder.rglob("*")):
+            if not filepath.is_file():
                 continue
-            _, ext = os.path.splitext(filename.lower())
+            ext = filepath.suffix.lower()
             for category, exts in supported.items():
                 if ext in exts:
-                    files[category].append(filepath)
+                    files[category].append(str(filepath))
                     break
 
         self.process_videos(files['video'])
+        self.audio_paths = files['audio']
         self.process_audio(files['audio'])
         self.process_images(files['image'])
 
-        print(f"loaded {len(self.clips)} clips")
+        if not self.clips:
+            raise ValueError(
+                f"No supported media found in {self.input_folder}. "
+                "Supported formats: mp4, mov, avi, mkv, jpg, jpeg, png, gif, mp3, wav, flac."
+            )
+        logger.info("loaded %d clips", len(self.clips))
 
     def process_videos(self, video_paths):
+        if cv2 is None:
+            logger.warning("opencv-python is not installed; skipping video inputs")
+            return
         for video_path in video_paths:
             try:
                 cap = cv2.VideoCapture(video_path)
@@ -108,9 +156,11 @@ class OrithetCore:
                             'metadata': self.extract_clip_metadata(video_path, start_frame, end_frame),
                         })
             except Exception as e:
-                print(f"error processing video {video_path}: {e}")
+                logger.warning("error processing video %s: %s", video_path, e)
 
     def detect_scenes(self, video_path):
+        if cv2 is None:
+            return []
         if SCENEDETECT_AVAILABLE:
             try:
                 scene_list = detect(video_path, ContentDetector())
@@ -128,12 +178,14 @@ class OrithetCore:
         if fps == 0:
             return [(0, frame_count)]
 
-        segment_length = int(fps * 5)
+        segment_length = max(1, int(fps * 5))
         return [(i, min(i + segment_length, frame_count))
                 for i in range(0, frame_count, segment_length)]
 
     def process_audio(self, audio_paths):
-        if not audio_paths:
+        if not audio_paths or pydub is None or librosa is None:
+            if audio_paths:
+                logger.warning("audio analysis unavailable; install pydub and librosa to analyze audio")
             return
 
         combined_audio = None
@@ -142,7 +194,7 @@ class OrithetCore:
                 audio = pydub.AudioSegment.from_file(audio_path)
                 combined_audio = audio if combined_audio is None else combined_audio + audio
             except Exception as e:
-                print(f"error processing audio {audio_path}: {e}")
+                logger.warning("error processing audio %s: %s", audio_path, e)
 
         if combined_audio is None:
             return
@@ -173,15 +225,20 @@ class OrithetCore:
                     'high': float(np.mean(magnitude[high_mask])) if high_mask.any() else 0.5,
                 }
             }
-            print(f"audio: {self.audio_info['bpm']:.1f} bpm")
+            logger.info("audio: %.1f bpm", self.audio_info['bpm'])
         except Exception as e:
-            print(f"audio analysis failed: {e}")
+            if 'tmp_path' in locals() and os.path.exists(tmp_path):
+                os.unlink(tmp_path)
+            logger.warning("audio analysis failed: %s", e)
 
     def process_images(self, image_paths):
+        if Image is None:
+            logger.warning("pillow is not installed; skipping image inputs")
+            return
         for image_path in image_paths:
             try:
-                img = Image.open(image_path)
-                w, h = img.size
+                with Image.open(image_path) as img:
+                    w, h = img.size
                 duration = max(2, min(15, w * h // 100000))
                 self.clips.append({
                     'path': image_path,
@@ -190,7 +247,7 @@ class OrithetCore:
                     'metadata': self.extract_clip_metadata(image_path),
                 })
             except Exception as e:
-                print(f"error processing image {image_path}: {e}")
+                logger.warning("error processing image %s: %s", image_path, e)
 
     # -------------------------------------------------------------------------
     # Metadata
@@ -201,6 +258,8 @@ class OrithetCore:
         _, ext = os.path.splitext(path.lower())
 
         if ext in ('.mp4', '.mov', '.avi', '.mkv'):
+            if cv2 is None:
+                return metadata
             try:
                 cap = cv2.VideoCapture(path)
                 if start_frame is not None:
@@ -238,9 +297,11 @@ class OrithetCore:
                 pass
 
         elif ext in ('.jpg', '.jpeg', '.png', '.gif'):
+            if Image is None:
+                return metadata
             try:
-                img = Image.open(path).convert('RGB')
-                arr = np.array(img)
+                with Image.open(path) as img:
+                    arr = np.array(img.convert('RGB'))
                 metadata['avg_color'] = np.mean(arr, axis=(0, 1)).tolist()
                 metadata['dominant_hue'] = self.get_dominant_hue(arr)
             except Exception:
@@ -250,6 +311,8 @@ class OrithetCore:
 
     def get_dominant_hue(self, img_array):
         try:
+            if cv2 is None:
+                return 0
             if img_array.shape[2] == 3:
                 hsv = cv2.cvtColor(img_array.astype(np.uint8), cv2.COLOR_RGB2HSV)
                 hue_hist = cv2.calcHist([hsv], [0], None, [180], [0, 180])
@@ -263,7 +326,7 @@ class OrithetCore:
     # -------------------------------------------------------------------------
 
     def build_similarity_graph(self):
-        print("building similarity graph...")
+        logger.info("building similarity graph...")
         n = len(self.clips)
         self.similarity_graph = {}
         for i in range(n):
@@ -287,14 +350,14 @@ class OrithetCore:
     # -------------------------------------------------------------------------
 
     def create_ecosystem_simulation(self):
-        print("creating ecosystem simulation...")
+        logger.info("creating ecosystem simulation...")
         self.creatures = []
         for i, clip in enumerate(self.clips):
             self.creatures.append({
                 'id': i,
                 'clip': clip,
-                'position': [random.uniform(0, 30), random.uniform(0, 30)],
-                'velocity': [random.uniform(-0.5, 0.5), random.uniform(-0.5, 0.5)],
+                'position': [self.rng.uniform(0, 30), self.rng.uniform(0, 30)],
+                'velocity': [self.rng.uniform(-0.5, 0.5), self.rng.uniform(-0.5, 0.5)],
                 'age': 0,
                 'effects': [],
                 'mutation_rate': self.chaos * 0.1,
@@ -305,8 +368,8 @@ class OrithetCore:
 
     def update_creatures(self, step):
         for c in self.creatures:
-            c['position'][0] = max(0, min(30, c['position'][0] + c['velocity'][0] + random.uniform(-0.1, 0.1)))
-            c['position'][1] = max(0, min(30, c['position'][1] + c['velocity'][1] + random.uniform(-0.1, 0.1)))
+            c['position'][0] = max(0, min(30, c['position'][0] + c['velocity'][0] + self.rng.uniform(-0.1, 0.1)))
+            c['position'][1] = max(0, min(30, c['position'][1] + c['velocity'][1] + self.rng.uniform(-0.1, 0.1)))
             c['age'] += 1
 
         for i in range(len(self.creatures)):
@@ -323,18 +386,18 @@ class OrithetCore:
             c2['clip']['metadata']['avg_color']
         )
 
-        if color_sim > 0.7 and random.random() < 0.3:
+        if color_sim > 0.7 and self.rng.random() < 0.3:
             self.fuse_creatures(c1, c2)
 
         if (c1['clip']['metadata']['motion_energy'] > 0.5 or
                 c2['clip']['metadata']['motion_energy'] > 0.5):
-            if random.random() < self.style_params['glitch_prob']:
+            if self.rng.random() < self.style_params['glitch_prob']:
                 self.apply_glitch_effect(c1)
                 self.apply_glitch_effect(c2)
 
-        if random.random() < c1['mutation_rate']:
+        if self.rng.random() < c1['mutation_rate']:
             self.mutate_creature(c1)
-        if random.random() < c2['mutation_rate']:
+        if self.rng.random() < c2['mutation_rate']:
             self.mutate_creature(c2)
 
     def color_similarity(self, c1, c2):
@@ -382,19 +445,19 @@ class OrithetCore:
             self.creatures.remove(c2)
 
     def apply_glitch_effect(self, creature):
-        effect = random.choice(['pixel_sort', 'datamosh', 'rgb_shift', 'mirror'])
+        effect = self.rng.choice(['pixel_sort', 'datamosh', 'rgb_shift', 'mirror'])
         if effect not in creature['effects']:
             creature['effects'].append(effect)
 
     def mutate_creature(self, creature):
-        if random.random() < 0.5:
+        if self.rng.random() < 0.5:
             color = creature['clip']['metadata']['avg_color']
             creature['clip']['metadata']['avg_color'] = [
-                max(0, min(255, c + random.randint(-20, 20))) for c in color
+                max(0, min(255, c + self.rng.randint(-20, 20))) for c in color
             ]
-        if random.random() < 0.3:
+        if self.rng.random() < 0.3:
             me = creature['clip']['metadata']['motion_energy']
-            creature['clip']['metadata']['motion_energy'] = max(0, min(1, me + random.uniform(-0.1, 0.1)))
+            creature['clip']['metadata']['motion_energy'] = max(0, min(1, me + self.rng.uniform(-0.1, 0.1)))
 
     # -------------------------------------------------------------------------
     # GlitchGarden: frame-level effects
@@ -444,7 +507,7 @@ class OrithetCore:
     # -------------------------------------------------------------------------
 
     def generate_timeline(self):
-        print("generating timeline...")
+        logger.info("generating timeline...")
         bpm = self.audio_info.get('bpm', 120)
         beat_interval = 60.0 / max(bpm, 1)
 
@@ -453,12 +516,16 @@ class OrithetCore:
         timeline_clips = []
         current_time = 0.0
 
-        for creature in sorted_creatures:
-            if current_time >= self.duration:
-                break
+        index = 0
+        while current_time < self.duration and sorted_creatures:
+            creature = sorted_creatures[index % len(sorted_creatures)]
+            index += 1
 
             clip = creature['clip']
-            raw_duration = clip['duration'] * (0.8 + self.chaos * 0.4)
+            raw_duration = min(
+                clip['duration'] * (0.8 + self.chaos * 0.4),
+                self.duration - current_time,
+            )
 
             # snap to beat grid
             beats = max(1, round(raw_duration / beat_interval))
@@ -472,13 +539,15 @@ class OrithetCore:
             current_time += snapped_duration
 
             # FractalFusion: spawn recursive overlays ~10% of the time at beat boundaries
-            if random.random() < 0.1:
+            if self.rng.random() < 0.1:
                 self.add_recursive_overlays(timeline_clips, current_time)
 
         return timeline_clips
 
     def create_timed_clip(self, clip, start_time, duration):
         try:
+            if any(dep is None for dep in (VideoFileClip, ImageClip, ColorClip)):
+                raise RuntimeError("moviepy is not installed; install project requirements to render")
             if clip['type'] == 'video':
                 fps = clip.get('fps', 30)
                 t_start = clip['start_frame'] / fps
@@ -507,7 +576,7 @@ class OrithetCore:
                 'moviepy_clip': mc,
             }
         except Exception as e:
-            print(f"error creating clip from {clip.get('path', '?')}: {e}")
+            logger.warning("error creating clip from %s: %s", clip.get('path', '?'), e)
             return None
 
     # -------------------------------------------------------------------------
@@ -550,26 +619,36 @@ class OrithetCore:
                     'moviepy_clip': overlay,
                 })
             except Exception as e:
-                print(f"fractalfusion overlay failed at depth {d}: {e}")
+                logger.warning("fractalfusion overlay failed at depth %d: %s", d, e)
 
     # -------------------------------------------------------------------------
     # Render
     # -------------------------------------------------------------------------
 
     def render_video(self, output_path):
-        print("rendering final video...")
+        logger.info("rendering final video...")
         timeline_clips = self.generate_timeline()
 
         moviepy_clips = [tc['moviepy_clip'] for tc in timeline_clips
                          if tc.get('moviepy_clip') is not None]
 
         if not moviepy_clips:
-            print("no valid clips to render")
-            return
+            raise RuntimeError("No valid clips could be created from the input media")
 
         moviepy_clips.sort(key=lambda c: c.start)
 
         final = CompositeVideoClip(moviepy_clips, size=self.resolution)
+        final = final.set_duration(self.duration)
+        soundtrack = None
+        if self.audio_paths and AudioFileClip is not None:
+            try:
+                soundtrack = AudioFileClip(self.audio_paths[0])
+                if soundtrack.duration > self.duration:
+                    soundtrack = soundtrack.subclip(0, self.duration)
+                final = final.set_audio(soundtrack)
+            except Exception as exc:
+                logger.warning("could not attach soundtrack: %s", exc)
+        Path(output_path).expanduser().resolve().parent.mkdir(parents=True, exist_ok=True)
         final.write_videofile(
             output_path,
             fps=30,
@@ -578,14 +657,17 @@ class OrithetCore:
             temp_audiofile='temp-audio.m4a',
             remove_temp=True,
         )
-        print(f"rendered to {output_path}")
+        if soundtrack is not None:
+            soundtrack.close()
+        final.close()
+        logger.info("rendered to %s", output_path)
 
     # -------------------------------------------------------------------------
     # Entry point
     # -------------------------------------------------------------------------
 
     def run(self, output_path=None):
-        print("starting orithet...")
+        logger.info("starting orithet...")
         if output_path is None:
             output_path = f"orithet_output_{self.seed}.mp4"
 
@@ -594,5 +676,5 @@ class OrithetCore:
         self.create_ecosystem_simulation()
         self.render_video(output_path)
 
-        print("done!")
+        logger.info("done")
         return output_path

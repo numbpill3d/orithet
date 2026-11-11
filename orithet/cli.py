@@ -5,14 +5,20 @@ Command-line interface for Orithet - Generative Video Art Tool
 
 import argparse
 import sys
-import os
-from .core import OrithetCore
+import logging
+from pathlib import Path
+
+try:
+    from .core import OrithetCore
+except ImportError:  # Support the documented `python orithet/cli.py ...` form.
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+    from orithet.core import OrithetCore
 
 def main():
     parser = argparse.ArgumentParser(description='Orithet - Generative Video Art Tool')
     parser.add_argument('--input_folder', required=True,
                        help='Path to folder containing media files (.mp4, .mov, .gif, .jpg, .png, .mp3, .wav)')
-    parser.add_argument('--duration', type=int, default=120,
+    parser.add_argument('--duration', type=float, default=120,
                        help='Target video duration in seconds (default: 120)')
     parser.add_argument('--chaos', type=float, default=0.5,
                        help='Randomness factor (0.0-1.0, default: 0.5)')
@@ -26,20 +32,7 @@ def main():
     
     args = parser.parse_args()
     
-    # Validate input folder
-    if not os.path.exists(args.input_folder):
-        print(f"Error: Input folder '{args.input_folder}' does not exist.")
-        sys.exit(1)
-        
-    # Validate chaos parameter
-    if not 0.0 <= args.chaos <= 1.0:
-        print("Error: Chaos parameter must be between 0.0 and 1.0")
-        sys.exit(1)
-        
-    # Validate resolution
-    if len(args.resolution) != 2:
-        print("Error: Resolution must be specified as two integers (width height)")
-        sys.exit(1)
+    logging.basicConfig(level=logging.INFO, format='%(levelname)s: %(message)s')
         
     # Create and run Orithet
     try:
@@ -56,7 +49,7 @@ def main():
         print(f"Successfully generated video: {output_path}")
         
     except Exception as e:
-        print(f"Error: {e}")
+        print(f"Error: {e}", file=sys.stderr)
         sys.exit(1)
 
 if __name__ == "__main__":
