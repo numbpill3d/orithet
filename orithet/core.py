@@ -87,6 +87,7 @@ class OrithetCore:
         self.clips = []
         self.creatures = []
         self.audio_paths = []
+        self.excluded_paths = set()
         self.similarity_graph = {}
         self.audio_info = {
             'bpm': 120,
@@ -112,6 +113,11 @@ class OrithetCore:
 
         for filepath in sorted(self.input_folder.rglob("*")):
             if not filepath.is_file():
+                continue
+            resolved_path = filepath.resolve()
+            if resolved_path in self.excluded_paths:
+                continue
+            if filepath.stem.lower().startswith(("orithet_output", "orithet_render")):
                 continue
             ext = filepath.suffix.lower()
             for category, exts in supported.items():
@@ -385,8 +391,8 @@ class OrithetCore:
             c['position'][1] = max(0, min(30, c['position'][1] + c['velocity'][1] + self.rng.uniform(-0.1, 0.1)))
             c['age'] += 1
 
-        # Interactions can fuse and remove creatures. Iterate a snapshot so a
-        # removal cannot invalidate the live list's numeric indices mid-step.
+        # Interactions may mutate creature metadata. Iterate a snapshot so the
+        # simulation remains stable while preserving every source creature.
         for c1, c2 in combinations(list(self.creatures), 2):
             if not any(creature is c1 for creature in self.creatures):
                 continue
@@ -421,9 +427,9 @@ class OrithetCore:
         return 1.0 / (1.0 + np.linalg.norm(np.array(c1) - np.array(c2)) / 255.0)
 
     def fuse_creatures(self, c1, c2):
-        idx1 = next((index for index, creature in enumerate(self.creatures)
-                     if creature is c1), None)
-        if idx1 is None or not any(creature is c2 for creature in self.creatures):
+        if not any(creature is c1 for creature in self.creatures):
+            return
+        if not any(creature is c2 for creature in self.creatures):
             return
         avg_color = [(a + b) / 2 for a, b in zip(
             c1['clip']['metadata']['avg_color'],
@@ -436,32 +442,12 @@ class OrithetCore:
             'dominant_hue': (c1['clip']['metadata']['dominant_hue'] +
                              c2['clip']['metadata']['dominant_hue']) / 2,
         }
-        fused = {
-            'id': f"{c1['id']}-{c2['id']}",
-            'clip': {
-                'path': c1['clip']['path'],
-                'type': c1['clip']['type'],
-                'start_frame': c1['clip'].get('start_frame'),
-                'end_frame': c1['clip'].get('end_frame'),
-                'fps': c1['clip'].get('fps', 30),
-                'duration': (c1['clip']['duration'] + c2['clip']['duration']) / 2,
-                'metadata': fused_meta,
-            },
-            'position': [
-                (c1['position'][0] + c2['position'][0]) / 2,
-                (c1['position'][1] + c2['position'][1]) / 2,
-            ],
-            'velocity': [
-                (c1['velocity'][0] + c2['velocity'][0]) / 2,
-                (c1['velocity'][1] + c2['velocity'][1]) / 2,
-            ],
-            'age': max(c1['age'], c2['age']),
-            'effects': list(set(c1['effects'] + c2['effects'])),
-            'mutation_rate': (c1['mutation_rate'] + c2['mutation_rate']) / 2,
-        }
-        # replace c1 with fused, mark c2 for removal
-        self.creatures[idx1] = fused
-        self.creatures[:] = [creature for creature in self.creatures if creature is not c2]
+        # A fusion changes the visual DNA of the first creature, but does not
+        # delete the second source. The edit roster must retain every input or
+        # a large folder can collapse into a one-shot video.
+        c1['clip']['metadata'] = fused_meta
+        c1['effects'] = list(set(c1['effects'] + c2['effects']))
+        c1['fusion_count'] = c1.get('fusion_count', 0) + 1
 
     def apply_glitch_effect(self, creature):
         effect = self.rng.choice(['pixel_sort', 'datamosh', 'rgb_shift', 'mirror'])
@@ -566,15 +552,29 @@ class OrithetCore:
             beats = max(1, round(raw_duration / beat_interval))
             snapped_duration = beats * beat_interval
 
-            clip['effects'] = creature.get('effects', [])
+            effects = list(creature.get('effects', []))
+            # Make the chosen style visible even when source clips do not
+            # naturally collide during the ecosystem simulation.
+            style_effect_chance = min(
+                0.9, self.style_params['glitch_prob'] + self.chaos * 0.2
+            )
+            if self.rng.random() < style_effect_chance:
+                self.apply_glitch_effect(creature)
+                effects = list(creature.get('effects', []))
+            clip['effects'] = effects
             timed = self.create_timed_clip(clip, current_time, snapped_duration)
             if timed is not None:
                 timeline_clips.append(timed)
 
             current_time += snapped_duration
 
-            # FractalFusion: spawn recursive overlays ~10% of the time at beat boundaries
-            if self.rng.random() < 0.1:
+            # FractalFusion: layer active footage at beat boundaries. More
+            # volatile styles intentionally produce more visible recursion.
+            overlay_probability = min(
+                0.8,
+                0.12 + self.style_params['glitch_prob'] * 0.55 + self.chaos * 0.15,
+            )
+            if current_time < self.duration and self.rng.random() < overlay_probability:
                 self.add_recursive_overlays(timeline_clips, current_time)
 
         return timeline_clips
@@ -589,10 +589,12 @@ class OrithetCore:
                 t_end = clip['end_frame'] / fps
                 mc = (VideoFileClip(clip['path'])
                       .subclip(t_start, t_end)
+                      .resize(self.resolution)
                       .set_start(start_time)
                       .set_duration(duration))
             elif clip['type'] == 'image':
                 mc = (ImageClip(clip['path'])
+                      .resize(self.resolution)
                       .set_duration(duration)
                       .set_start(start_time))
             else:
@@ -626,7 +628,8 @@ class OrithetCore:
         w, h = self.resolution
         corners = [(0, 0), (w // 2, 0), (0, h // 2), (w // 2, h // 2)]
 
-        sources = timeline_clips[-min(depth, len(timeline_clips)):]
+        sources = [item for item in timeline_clips if not item.get('is_overlay')]
+        sources = sources[-min(depth, len(sources)):]
 
         for d, source in enumerate(sources[:depth], 1):
             mc = source.get('moviepy_clip')
@@ -636,15 +639,16 @@ class OrithetCore:
             scale = 0.5 ** d
             ow = max(64, int(w * scale * 0.5))
             oh = max(36, int(h * scale * 0.5))
-            pos = corners[d % 4]
+            pos = corners[(d - 1) % 4]
             overlay_dur = max(0.1, min(2.0 / d, mc.duration))
             opacity = max(0.15, 0.6 / d)
+            overlay_start = max(0, time_point - overlay_dur)
 
             try:
                 overlay = (mc
                            .subclip(0, overlay_dur)
                            .resize((ow, oh))
-                           .set_start(time_point)
+                           .set_start(overlay_start)
                            .set_position(pos)
                            .set_opacity(opacity))
                 timeline_clips.append({
@@ -652,6 +656,7 @@ class OrithetCore:
                     'start_time': time_point,
                     'duration': overlay_dur,
                     'moviepy_clip': overlay,
+                    'is_overlay': True,
                 })
             except Exception as e:
                 logger.warning("fractalfusion overlay failed at depth %d: %s", d, e)
@@ -713,9 +718,11 @@ class OrithetCore:
     # -------------------------------------------------------------------------
 
     def run(self, output_path=None):
-        logger.info("starting orithet...")
         if output_path is None:
             output_path = f"orithet_output_{self.seed}.mp4"
+        output_path = str(Path(output_path).expanduser().resolve())
+        self.excluded_paths = {Path(output_path)}
+        logger.info("starting orithet...")
 
         self.load_media()
         self.build_similarity_graph()

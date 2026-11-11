@@ -21,6 +21,10 @@ class FakeMoviePyClip:
         self.start = start
         return self
 
+    def resize(self, size):
+        self.size = size
+        return self
+
     def fl_image(self, function):
         self.function = function
         return self
@@ -52,6 +56,20 @@ class OrithetCoreTests(unittest.TestCase):
             self.assertEqual(
                 [Path(clip["path"]).name for clip in engine.clips], ["a.png", "z.png"]
             )
+
+    def test_generated_outputs_are_not_reingested_as_sources(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            Image.new("RGB", (20, 20), "red").save(root / "source.png")
+            (root / "orithet_output_old.mp4").write_bytes(b"not source media")
+            output = root / "new-output.mp4"
+            output.write_bytes(b"not source media")
+
+            engine = self.make_engine(folder, seed=2)
+            engine.excluded_paths = {output.resolve()}
+            engine.load_media()
+
+            self.assertEqual([Path(clip["path"]).name for clip in engine.clips], ["source.png"])
 
     def test_timeline_repeats_sources_to_target_duration(self):
         with tempfile.TemporaryDirectory() as folder:
@@ -88,7 +106,7 @@ class OrithetCoreTests(unittest.TestCase):
                     patch.object(engine.rng, "random", return_value=0.0):
                 engine.update_creatures(0)
 
-            self.assertGreaterEqual(len(engine.creatures), 1)
+            self.assertEqual(len(engine.creatures), len(engine.clips))
 
     def test_effects_accept_tiny_and_grayscale_frames(self):
         with tempfile.TemporaryDirectory() as folder:
