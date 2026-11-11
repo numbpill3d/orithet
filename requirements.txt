@@ -6,4 +6,5 @@ numpy>=1.19.0
 pillow>=8.0.0
 scikit-image>=0.18.0
 scenedetect>=0.6.0
+PySide6>=6.6
 gradio>=3.0.0

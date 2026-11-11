@@ -105,7 +105,24 @@ python -m orithet.cli --input_folder /path/to/media/folder --duration 120 --chao
 
 The direct script form (`python orithet/cli.py ...`) is also supported.
 
-### Web Interface (Gradio)
+### Native Desktop App
+
+Orithet includes a lightweight native Qt desktop interface—no Electron or browser shell required:
+
+```bash
+python -m pip install -e .
+orithet-gui
+```
+
+On KDE/Linux, the included `share/orithet.desktop` launcher can be installed to the user application menu:
+
+```bash
+install -Dm644 share/orithet.desktop ~/.local/share/applications/orithet.desktop
+```
+
+The desktop interface uses a dark graphite/platinum Macintosh-inspired visual system with procedural dithering. Choose a media folder, output path, duration, chaos, seed, style, and resolution, then generate without blocking the UI.
+
+### Optional Web Interface (Gradio)
 ```bash
 python -m orithet.gradio_ui
 ```

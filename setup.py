@@ -28,6 +28,7 @@ setup(
         "pillow>=8.0.0",
         "scikit-image>=0.18.0",
         "scenedetect>=0.6.0",
+        "PySide6>=6.6",
     ],
     extras_require={
         "ui": ["gradio>=3.0.0"],
@@ -35,6 +36,7 @@ setup(
     entry_points={
         "console_scripts": [
             "orithet=orithet.cli:main",
+            "orithet-gui=orithet.desktop_app:main",
         ],
     },
     include_package_data=True,
