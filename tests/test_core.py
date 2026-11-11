@@ -67,6 +67,35 @@ class OrithetCoreTests(unittest.TestCase):
                 engine.duration + 1e-6,
             )
 
+    def test_ecosystem_fusion_does_not_invalidate_interaction_indices(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            for name, color in (("a.png", "red"), ("b.png", "red"), ("c.png", "red")):
+                Image.new("RGB", (20, 20), color).save(root / name)
+
+            engine = self.make_engine(folder, seed=4)
+            engine.load_media()
+            engine.create_ecosystem_simulation()
+            for creature in engine.creatures:
+                creature["position"] = [1.0, 1.0]
+                creature["velocity"] = [0.0, 0.0]
+
+            with patch.object(engine.rng, "uniform", return_value=0.0), \
+                    patch.object(engine.rng, "random", return_value=0.0):
+                engine.update_creatures(0)
+
+            self.assertGreaterEqual(len(engine.creatures), 1)
+
+    def test_effects_accept_tiny_and_grayscale_frames(self):
+        with tempfile.TemporaryDirectory() as folder:
+            engine = self.make_engine(folder, seed=1)
+            tiny = __import__("numpy").zeros((1, 1, 3), dtype="uint8")
+            gray = __import__("numpy").zeros((1, 1), dtype="uint8")
+            self.assertEqual(engine._rgb_shift(tiny).shape, tiny.shape)
+            self.assertEqual(engine._mirror(tiny).shape, tiny.shape)
+            self.assertEqual(engine._pixel_sort(tiny).shape, tiny.shape)
+            self.assertEqual(engine.get_dominant_hue(gray), 0)
+
 
 if __name__ == "__main__":
     unittest.main()

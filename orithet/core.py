@@ -11,6 +11,7 @@ import logging
 import os
 import random
 import tempfile
+from itertools import combinations
 from pathlib import Path
 
 import numpy as np
@@ -311,9 +312,10 @@ class OrithetCore:
 
     def get_dominant_hue(self, img_array):
         try:
-            if cv2 is None:
+            if cv2 is None or not isinstance(img_array, np.ndarray) or img_array.ndim != 3:
                 return 0
-            if img_array.shape[2] == 3:
+            if img_array.shape[2] >= 3:
+                img_array = img_array[:, :, :3]
                 hsv = cv2.cvtColor(img_array.astype(np.uint8), cv2.COLOR_RGB2HSV)
                 hue_hist = cv2.calcHist([hsv], [0], None, [180], [0, 180])
                 return int(np.argmax(hue_hist))
@@ -372,13 +374,17 @@ class OrithetCore:
             c['position'][1] = max(0, min(30, c['position'][1] + c['velocity'][1] + self.rng.uniform(-0.1, 0.1)))
             c['age'] += 1
 
-        for i in range(len(self.creatures)):
-            for j in range(i + 1, len(self.creatures)):
-                c1, c2 = self.creatures[i], self.creatures[j]
-                dx = c1['position'][0] - c2['position'][0]
-                dy = c1['position'][1] - c2['position'][1]
-                if (dx * dx + dy * dy) < 4.0:
-                    self.handle_creature_interaction(c1, c2, step)
+        # Interactions can fuse and remove creatures. Iterate a snapshot so a
+        # removal cannot invalidate the live list's numeric indices mid-step.
+        for c1, c2 in combinations(list(self.creatures), 2):
+            if not any(creature is c1 for creature in self.creatures):
+                continue
+            if not any(creature is c2 for creature in self.creatures):
+                continue
+            dx = c1['position'][0] - c2['position'][0]
+            dy = c1['position'][1] - c2['position'][1]
+            if (dx * dx + dy * dy) < 4.0:
+                self.handle_creature_interaction(c1, c2, step)
 
     def handle_creature_interaction(self, c1, c2, step):
         color_sim = self.color_similarity(
@@ -404,6 +410,10 @@ class OrithetCore:
         return 1.0 / (1.0 + np.linalg.norm(np.array(c1) - np.array(c2)) / 255.0)
 
     def fuse_creatures(self, c1, c2):
+        idx1 = next((index for index, creature in enumerate(self.creatures)
+                     if creature is c1), None)
+        if idx1 is None or not any(creature is c2 for creature in self.creatures):
+            return
         avg_color = [(a + b) / 2 for a, b in zip(
             c1['clip']['metadata']['avg_color'],
             c2['clip']['metadata']['avg_color']
@@ -439,10 +449,8 @@ class OrithetCore:
             'mutation_rate': (c1['mutation_rate'] + c2['mutation_rate']) / 2,
         }
         # replace c1 with fused, mark c2 for removal
-        idx1 = self.creatures.index(c1)
         self.creatures[idx1] = fused
-        if c2 in self.creatures:
-            self.creatures.remove(c2)
+        self.creatures[:] = [creature for creature in self.creatures if creature is not c2]
 
     def apply_glitch_effect(self, creature):
         effect = self.rng.choice(['pixel_sort', 'datamosh', 'rgb_shift', 'mirror'])
@@ -464,19 +472,26 @@ class OrithetCore:
     # -------------------------------------------------------------------------
 
     def _rgb_shift(self, frame):
+        if frame.ndim != 3 or frame.shape[1] < 2:
+            return frame
         shift = max(2, int(self.chaos * 12))
+        shift = min(shift, frame.shape[1] - 1)
         result = frame.copy()
         result[:, shift:, 0] = frame[:, :-shift, 0]
         result[:, :-shift, 2] = frame[:, shift:, 2]
         return result
 
     def _mirror(self, frame):
+        if frame.ndim != 3 or frame.shape[1] < 2:
+            return frame
         result = frame.copy()
         half = frame.shape[1] // 2
         result[:, half:] = frame[:, :half][:, ::-1]
         return result
 
     def _pixel_sort(self, frame):
+        if cv2 is None or frame.ndim != 3 or frame.shape[0] == 0:
+            return frame
         result = frame.copy()
         gray = cv2.cvtColor(frame, cv2.COLOR_RGB2GRAY)
         for i in range(0, frame.shape[0], 3):
@@ -485,6 +500,8 @@ class OrithetCore:
         return result
 
     def _datamosh(self, frame):
+        if cv2 is None or frame.ndim != 3 or frame.shape[0] == 0:
+            return frame
         shift = max(8, int(self.chaos * 20))
         shifted = np.roll(frame, shift, axis=0)
         return cv2.addWeighted(frame, 0.75, shifted.astype(np.uint8), 0.25, 0)
