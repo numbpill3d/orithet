@@ -23,6 +23,7 @@ setup(
         "moviepy>=1.0.3,<2",
         "opencv-python>=4.5.1.78",
         "librosa>=0.10.2",
+        "matplotlib>=3.8",
         "pydub>=0.25.1",
         "numpy>=1.19.0",
         "pillow>=8.0.0",
