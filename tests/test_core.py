@@ -25,6 +25,15 @@ class FakeMoviePyClip:
         self.size = size
         return self
 
+    def subclip(self, *args):
+        return self
+
+    def set_position(self, position):
+        return self
+
+    def set_opacity(self, opacity):
+        return self
+
     def fl_image(self, function):
         self.function = function
         return self
@@ -126,6 +135,30 @@ class OrithetCoreTests(unittest.TestCase):
                 engine.apply_effects_to_clip(fake_clip, ["rgb_shift"])
             frame = __import__("numpy").zeros((2, 2, 3), dtype="uint8")
             self.assertIs(fake_clip.function(frame), frame)
+
+    def test_video_timeline_always_has_a_style_effect_chain(self):
+        with tempfile.TemporaryDirectory() as folder:
+            engine = self.make_engine(folder, seed=1, style="psychedelic")
+            engine.clips = [{
+                "path": "synthetic.mp4",
+                "type": "video",
+                "start_frame": 0,
+                "end_frame": 30,
+                "fps": 30,
+                "duration": 1,
+                "metadata": {"avg_color": [128, 128, 128], "motion_energy": 0, "dominant_hue": 0},
+            }]
+            engine.creatures = [{
+                "id": 0, "clip": engine.clips[0], "position": [0, 0],
+                "velocity": [0, 0], "age": 0, "effects": [], "mutation_rate": 0,
+            }]
+            with patch("orithet.core.VideoFileClip", FakeMoviePyClip), \
+                    patch("orithet.core.ImageClip", FakeMoviePyClip), \
+                    patch("orithet.core.ColorClip", FakeMoviePyClip):
+                timeline = engine.generate_timeline()
+            self.assertTrue({"datamosh", "rgb_shift", "mirror", "color_crush"}.issubset(
+                set(timeline[0]["clip"]["effects"])
+            ))
 
 
 if __name__ == "__main__":

@@ -471,7 +471,9 @@ class OrithetCore:
     def _rgb_shift(self, frame):
         if frame.ndim != 3 or frame.shape[1] < 2:
             return frame
-        shift = max(2, int(self.chaos * 12))
+        # Scale displacement with the actual frame width so 1080p/4K footage
+        # receives a visible treatment instead of a barely perceptible offset.
+        shift = max(3, int(frame.shape[1] * (0.02 + self.chaos * 0.06)))
         shift = min(shift, frame.shape[1] - 1)
         result = frame.copy()
         result[:, shift:, 0] = frame[:, :-shift, 0]
@@ -491,7 +493,8 @@ class OrithetCore:
             return frame
         result = frame.copy()
         gray = cv2.cvtColor(frame, cv2.COLOR_RGB2GRAY)
-        for i in range(0, frame.shape[0], 3):
+        row_step = max(1, int(3 - self.chaos * 2))
+        for i in range(0, frame.shape[0], row_step):
             idx = np.argsort(gray[i])
             result[i] = frame[i][idx]
         return result
@@ -499,9 +502,18 @@ class OrithetCore:
     def _datamosh(self, frame):
         if cv2 is None or frame.ndim != 3 or frame.shape[0] == 0:
             return frame
-        shift = max(8, int(self.chaos * 20))
-        shifted = np.roll(frame, shift, axis=0)
-        return cv2.addWeighted(frame, 0.75, shifted.astype(np.uint8), 0.25, 0)
+        vertical = max(4, int(frame.shape[0] * (0.03 + self.chaos * 0.08)))
+        horizontal = max(3, int(frame.shape[1] * (0.02 + self.chaos * 0.05)))
+        shifted = np.roll(frame, vertical, axis=0)
+        shifted = np.roll(shifted, horizontal, axis=1)
+        return cv2.addWeighted(frame, 0.42, shifted.astype(np.uint8), 0.58, 0)
+
+    def _color_crush(self, frame):
+        if frame.ndim != 3:
+            return frame
+        levels = max(3, 8 - int(self.chaos * 5))
+        step = 255 / (levels - 1)
+        return (np.round(frame / step) * step).clip(0, 255).astype(np.uint8)
 
     def apply_effects_to_clip(self, clip, effects):
         effect_fns = {
@@ -509,6 +521,7 @@ class OrithetCore:
             'mirror':     self._mirror,
             'pixel_sort': self._pixel_sort,
             'datamosh':   self._datamosh,
+            'color_crush': self._color_crush,
         }
         for effect in effects:
             fn = effect_fns.get(effect)
@@ -553,14 +566,19 @@ class OrithetCore:
             snapped_duration = beats * beat_interval
 
             effects = list(creature.get('effects', []))
-            # Make the chosen style visible even when source clips do not
-            # naturally collide during the ecosystem simulation.
-            style_effect_chance = min(
-                0.9, self.style_params['glitch_prob'] + self.chaos * 0.2
-            )
-            if self.rng.random() < style_effect_chance:
-                self.apply_glitch_effect(creature)
-                effects = list(creature.get('effects', []))
+            if clip['type'] == 'video':
+                guaranteed_effects = {
+                    'dream': ['rgb_shift', 'color_crush'],
+                    'glitch': ['datamosh', 'rgb_shift', 'pixel_sort', 'color_crush'],
+                    'psychedelic': ['datamosh', 'rgb_shift', 'mirror', 'color_crush'],
+                    'ambient': ['rgb_shift'],
+                }[self.style]
+                # Video is never allowed to pass through untreated. The style
+                # controls how aggressive the deterministic chain is.
+                for effect in guaranteed_effects:
+                    if effect not in effects:
+                        effects.append(effect)
+                creature['effects'] = effects
             clip['effects'] = effects
             timed = self.create_timed_clip(clip, current_time, snapped_duration)
             if timed is not None:
