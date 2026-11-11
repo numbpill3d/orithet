@@ -107,11 +107,11 @@ class OrithetWindow(QMainWindow):
         QWidget { background: #171717; color: #e4e4e4; font-family: 'DejaVu Sans Mono'; font-size: 12px; }
         QMainWindow { background: #171717; }
         QFrame#shell { border: 1px solid #8e8e8e; background: #222222; }
-        QFrame#titlebar { background: #c8c8c8; border-bottom: 1px solid #080808; }
-        QLabel#title { color: #101010; font-weight: bold; letter-spacing: 2px; }
-        QLabel#stamp { color: #454545; font-size: 10px; }
-        QLabel#subtitle { color: #b6b6b6; font-size: 11px; }
-        QLabel#state { color: #111111; background: #bdbdbd; border: 1px solid #f1f1f1; border-right-color: #555555; border-bottom-color: #555555; padding: 3px 8px; font-weight: bold; }
+        QFrame#titlebar { background: #c8c8c8; border-bottom: 1px solid #080808; min-height: 40px; }
+        QLabel#title { background: #111111; color: #ffffff; padding: 6px 10px; font-size: 15px; font-weight: bold; }
+        QLabel#stamp { background: #c8c8c8; color: #202020; font-size: 10px; font-weight: bold; padding: 0 6px; }
+        QLabel#subtitle { background: #c8c8c8; color: #202020; font-size: 12px; font-weight: bold; padding-left: 9px; }
+        QLabel#state { color: #111111; background: #eeeeee; border: 1px solid #ffffff; border-right-color: #444444; border-bottom-color: #444444; padding: 4px 9px; font-weight: bold; }
         QLabel#section { color: #bcbcbc; font-weight: bold; letter-spacing: 1px; }
         QGroupBox { border: 1px solid #696969; margin-top: 14px; padding: 10px 8px 8px 8px; background: #242424; }
         QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0 5px; color: #d0d0d0; background: #242424; }
@@ -143,7 +143,7 @@ class OrithetWindow(QMainWindow):
 
         titlebar = QFrame(objectName="titlebar")
         title_layout = QHBoxLayout(titlebar)
-        title_layout.setContentsMargins(12, 7, 12, 7)
+        title_layout.setContentsMargins(10, 5, 10, 5)
         title = QLabel("ORITHET")
         title.setObjectName("title")
         title_layout.addWidget(title)
@@ -151,7 +151,7 @@ class OrithetWindow(QMainWindow):
         subtitle.setObjectName("subtitle")
         title_layout.addWidget(subtitle)
         title_layout.addStretch()
-        stamp = QLabel("PULSE // ECHO // GLITCH // FRACTAL")
+        stamp = QLabel("PULSE / ECHO / GLITCH / FRACTAL")
         stamp.setObjectName("stamp")
         title_layout.addWidget(stamp)
         self.state = QLabel("READY")
