@@ -7,6 +7,7 @@ hard borders, bitmap dithering, and a restrained monochrome palette.
 
 import logging
 import sys
+import traceback
 from pathlib import Path
 
 from PySide6.QtCore import QObject, QSettings, QThread, Qt, Signal, Slot
@@ -77,8 +78,15 @@ class GenerationWorker(QObject):
             result = engine.run(output_path=output_path)
             self.finished.emit(str(result))
         except Exception as exc:  # Surface the error in the UI, not the event loop.
-            LOGGER.exception("generation failed")
-            self.failed.emit(str(exc))
+            details = traceback.format_exc()
+            report_path = Path.home() / ".cache" / "orithet" / "last-error.log"
+            try:
+                report_path.parent.mkdir(parents=True, exist_ok=True)
+                report_path.write_text(details, encoding="utf-8")
+            except OSError:
+                LOGGER.exception("could not write generation error report")
+            LOGGER.error("generation failed; full report: %s\n%s", report_path, details)
+            self.failed.emit(f"{type(exc).__name__}: {exc}\n\nFull report: {report_path}")
 
 
 class OrithetWindow(QMainWindow):

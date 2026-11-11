@@ -21,6 +21,10 @@ class FakeMoviePyClip:
         self.start = start
         return self
 
+    def fl_image(self, function):
+        self.function = function
+        return self
+
 
 class OrithetCoreTests(unittest.TestCase):
     def make_engine(self, folder, **kwargs):
@@ -95,6 +99,15 @@ class OrithetCoreTests(unittest.TestCase):
             self.assertEqual(engine._mirror(tiny).shape, tiny.shape)
             self.assertEqual(engine._pixel_sort(tiny).shape, tiny.shape)
             self.assertEqual(engine.get_dominant_hue(gray), 0)
+
+    def test_deferred_effect_failure_falls_back_to_original_frame(self):
+        with tempfile.TemporaryDirectory() as folder:
+            engine = self.make_engine(folder, seed=1)
+            fake_clip = FakeMoviePyClip()
+            with patch.object(engine, "_rgb_shift", side_effect=IndexError("bad frame")):
+                engine.apply_effects_to_clip(fake_clip, ["rgb_shift"])
+            frame = __import__("numpy").zeros((2, 2, 3), dtype="uint8")
+            self.assertIs(fake_clip.function(frame), frame)
 
 
 if __name__ == "__main__":

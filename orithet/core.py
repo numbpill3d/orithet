@@ -516,7 +516,14 @@ class OrithetCore:
         for effect in effects:
             fn = effect_fns.get(effect)
             if fn:
-                clip = clip.fl_image(fn)
+                def safe_effect(frame, effect_name=effect, effect_fn=fn):
+                    try:
+                        return effect_fn(frame)
+                    except (IndexError, ValueError, TypeError) as exc:
+                        logger.warning("skipping %s effect for malformed frame: %s", effect_name, exc)
+                        return frame
+
+                clip = clip.fl_image(safe_effect)
         return clip
 
     # -------------------------------------------------------------------------
