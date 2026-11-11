@@ -1,6 +1,6 @@
 # Orithet - Generative Video Art Tool
 
-[![GitHub](https://img.shields.io/github/license/orithet/orithet)](LICENSE)
+[![GitHub](https://img.shields.io/github/license/numbpill3d/orithet)](LICENSE)
 [![Python](https://img.shields.io/badge/python-3.9%2B-blue)](https://www.python.org/)
 [![FFmpeg](https://img.shields.io/badge/ffmpeg-required-orange)](https://ffmpeg.org/)
 
@@ -12,6 +12,10 @@ Orithet is a cutting-edge generative video art tool that seamlessly blends four 
 - **FractalFusion**: Recursive picture-in-picture layers and infinite-depth echoes
 
 Transform any collection of media files into hypnotic generative music videos or visual albums that feel like living digital organisms.
+
+![Orithet native desktop interface](assets/orithet-ui.png)
+
+The native desktop app uses a dark graphite/platinum Macintosh-inspired interface and runs locally without Electron.
 
 ## 🎨 Features Overview
 
@@ -51,19 +55,19 @@ Transform any collection of media files into hypnotic generative music videos or
 ### Cross-Platform Installation
 
 #### Windows
-1. Install Python 3.7+ from [python.org](https://www.python.org/downloads/)
+1. Install Python 3.9+ from [python.org](https://www.python.org/downloads/)
 2. Install FFmpeg:
    - Download from [ffmpeg.org](https://ffmpeg.org/download.html)
    - Add FFmpeg to your system PATH
 3. Open Command Prompt and run:
 ```cmd
-git clone https://github.com/orithet/orithet.git
+git clone https://github.com/numbpill3d/orithet.git
 cd orithet
 pip install -r requirements.txt
 ```
 
 #### macOS
-1. Install Python 3.7+ using Homebrew:
+1. Install Python 3.9+ using Homebrew:
 ```bash
 brew install python
 ```
@@ -73,20 +77,20 @@ brew install ffmpeg
 ```
 3. Open Terminal and run:
 ```bash
-git clone https://github.com/orithet/orithet.git
+git clone https://github.com/numbpill3d/orithet.git
 cd orithet
 pip install -r requirements.txt
 ```
 
 #### Linux (Ubuntu/Debian)
-1. Install Python 3.7+ and FFmpeg:
+1. Install Python 3.9+ and FFmpeg:
 ```bash
 sudo apt update
 sudo apt install python3 python3-pip ffmpeg
 ```
 2. Open Terminal and run:
 ```bash
-git clone https://github.com/orithet/orithet.git
+git clone https://github.com/numbpill3d/orithet.git
 cd orithet
 pip install -r requirements.txt
 ```
