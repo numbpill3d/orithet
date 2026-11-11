@@ -276,14 +276,25 @@ class OrithetCore:
                     ret, frame = cap.read()
                     if not ret:
                         break
-                    last_frame = frame
-                    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+                    # Metadata does not need source resolution. Keep analysis
+                    # bounded so portrait/4K media cannot stall the pipeline.
+                    height, width = frame.shape[:2]
+                    max_dimension = 320
+                    if max(height, width) > max_dimension:
+                        scale = max_dimension / max(height, width)
+                        analysis_frame = cv2.resize(
+                            frame, (max(1, int(width * scale)), max(1, int(height * scale)))
+                        )
+                    else:
+                        analysis_frame = frame
+                    last_frame = analysis_frame
+                    gray = cv2.cvtColor(analysis_frame, cv2.COLOR_BGR2GRAY)
                     if prev_gray is not None:
                         flow = cv2.calcOpticalFlowFarneback(
                             prev_gray, gray, None, 0.5, 3, 15, 3, 5, 1.2, 0
                         )
                         motion_sum += float(np.mean(np.abs(flow)))
-                    color_sum += np.mean(frame, axis=(0, 1))
+                    color_sum += np.mean(analysis_frame, axis=(0, 1))
                     prev_gray = gray
                     frame_count += 1
 
@@ -661,29 +672,40 @@ class OrithetCore:
 
         moviepy_clips.sort(key=lambda c: c.start)
 
-        final = CompositeVideoClip(moviepy_clips, size=self.resolution)
-        final = final.set_duration(self.duration)
+        final = None
         soundtrack = None
-        if self.audio_paths and AudioFileClip is not None:
-            try:
-                soundtrack = AudioFileClip(self.audio_paths[0])
-                if soundtrack.duration > self.duration:
-                    soundtrack = soundtrack.subclip(0, self.duration)
-                final = final.set_audio(soundtrack)
-            except Exception as exc:
-                logger.warning("could not attach soundtrack: %s", exc)
-        Path(output_path).expanduser().resolve().parent.mkdir(parents=True, exist_ok=True)
-        final.write_videofile(
-            output_path,
-            fps=30,
-            codec='libx264',
-            audio_codec='aac',
-            temp_audiofile='temp-audio.m4a',
-            remove_temp=True,
-        )
-        if soundtrack is not None:
-            soundtrack.close()
-        final.close()
+        try:
+            final = CompositeVideoClip(moviepy_clips, size=self.resolution)
+            final = final.set_duration(self.duration)
+            if self.audio_paths and AudioFileClip is not None:
+                try:
+                    soundtrack = AudioFileClip(self.audio_paths[0])
+                    if soundtrack.duration > self.duration:
+                        soundtrack = soundtrack.subclip(0, self.duration)
+                    final = final.set_audio(soundtrack)
+                except Exception as exc:
+                    logger.warning("could not attach soundtrack: %s", exc)
+            Path(output_path).expanduser().resolve().parent.mkdir(parents=True, exist_ok=True)
+            with tempfile.TemporaryDirectory(prefix="orithet-render-") as temp_dir:
+                final.write_videofile(
+                    output_path,
+                    fps=30,
+                    codec='libx264',
+                    audio_codec='aac',
+                    temp_audiofile=str(Path(temp_dir) / 'audio.m4a'),
+                    remove_temp=True,
+                )
+        finally:
+            if soundtrack is not None:
+                try:
+                    soundtrack.close()
+                except Exception:
+                    logger.debug("soundtrack cleanup failed", exc_info=True)
+            if final is not None:
+                try:
+                    final.close()
+                except Exception:
+                    logger.debug("final clip cleanup failed", exc_info=True)
         logger.info("rendered to %s", output_path)
 
     # -------------------------------------------------------------------------
